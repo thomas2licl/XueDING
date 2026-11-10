@@ -55,7 +55,7 @@ void lv_demo_widgets_profile_create(lv_obj_t * parent)
     lv_obj_t * avatar = lv_image_create(panel1);
     lv_image_set_src(avatar, &img_demo_widgets_avatar);
 
-    lv_obj_t * name = lv_demo_widgets_title_create(panel1, "Elena Smith");
+    lv_obj_t * name = lv_demo_widgets_title_create(panel1, "XiaoXUECHAN");
 
     lv_obj_t * dsc = lv_label_create(panel1);
     lv_obj_add_style(dsc, &style_text_muted, 0);
