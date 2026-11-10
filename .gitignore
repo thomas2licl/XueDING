@@ -3,10 +3,6 @@ build/
 sdkconfig
 sdkconfig.old
 
-# 组件管理器下载的依赖（由 dependencies.lock 锁定版本后自动恢复）
-managed_components/
-.component_hash
-
 # IDE / 工具本地配置
 .vscode/
 .idea/
