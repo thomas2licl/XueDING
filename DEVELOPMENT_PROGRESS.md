@@ -154,7 +154,7 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 | 3 | LocalLife 需求文档 V0.1 | ✅ 完成 | 2026-11-10 | 见 `需求/需求文档.md`；项目定位由 TPMS 显示验证转向桌面生活终端 |
 | 4 | 编译 + 烧录验证例程跑通 | ✅ 完成 | 2026-11-10 | 编译 + 烧录 + 屏显/触摸验证通过（widgets demo）；profile 页已个性化 |
 | 5 | 软件架构设计（本地优先、模块化） | ⬜ 未开始 | | 任务划分、存储与分区规划 |
-| 6 | 关键技术预研 | ⬜ 未开始 | | 离线 ASR / 离线 TTS / 音频链路 / 天气 API / BLE 传图 |
+| 6 | 关键技术预研 | 🔶 进行中 | | 2026-11-10 完成音频硬件/音频链路/ESP-SR/TTS 四项（结论见 §6.1），全部可行；剩余：和风天气 API、BLE 传图、SNTP+RTC |
 | 7 | 智能时钟 + 闹钟（核心，离线可用） | ⬜ 未开始 | | SNTP + PCF85063；夜间时钟模式 |
 | 8 | 声音中心（白噪音/助眠/专注） | ⬜ 未开始 | | 依赖音频链路预研结论 |
 | 9 | 天气助手（和风天气 + 通勤提醒） | ⬜ 未开始 | | 依赖 WiFi；含地点管理与缓存策略 |
@@ -171,15 +171,61 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 
 ## 6. 待办 / 问题清单
 
+### 6.1 技术预研结论（2026-11-10，语音与音频方向）
+
+**① 板载音频硬件（来源：原理图 `schematic/` + 例程 08 `board_cfg.txt`）— 全齐备 ✅**
+
+| 链路 | 器件 | 说明 |
+|---|---|---|
+| 播放 | ES8311（DAC）→ NS4150B（功放）→ 喇叭 | TTS 播报、白噪音输出 |
+| 录音 | ES7210（ADC）← MIC1 + MIC2（双模拟麦） | 唤醒词/命令词输入；双麦可用 AFE 波束降噪 |
+
+- I2S 引脚：mclk=GPIO7、bclk=15、ws=46、din=6（录音）、dout=45（播放）；codec 控制走 I2C 总线0（47/48，与 TCA9554 同总线）
+- **结论：语音输入/输出硬件无缺口，离线语音识别（需求§3）具备硬前提**
+
+**② 音频软件链路（例程 08_Audio_Test）— 官方已铺好，移植成本低 ✅**
+
+- 架构：`espressif/esp_codec_dev ~1.3.4`（统一 codec 抽象）+ 微雪 `codec_board` 组件（解析 `board_cfg.txt`，板型 `S3_LCD_3_49`）+ `audio_bsp`
+- 播放：`esp_codec_dev_write()`，24kHz/2ch/16bit 裸 PCM（例程用 `EMBED_FILES` 把 canon.pcm 嵌进固件）
+- 录音：`esp_codec_dev_read()`，24kHz/2ch；音量 `esp_codec_dev_set_out_vol()`、录音增益 `set_in_gain()` 均有 API
+- 移植到本工程：拷 `codec_board` + `audio_bsp` 两个组件，`idf_component.yml` 加 `espressif/esp_codec_dev` 依赖即可
+- 白噪音资源：少量可 EMBED 嵌入；批量音频建议放 SD 卡（板载 TF 卡槽，见例程 04）
+
+**③ ESP-SR 离线语音识别 — 可行 ✅（需 PSRAM，本板 8MB Octal 满足）**
+
+- 流水线：AFE（AEC 回声消除/降噪/双麦波束）→ WakeNet（唤醒）→ MultiNet（命令词）
+- MultiNet 原生支持**中文拼音命令词**，最多 200 条，运行时可增删改 → 覆盖需求"查询时间/天气、控制音乐、设闹钟"等固定命令
+- 资源占用（官方 benchmark）：MultiNet5 Q8 ≈ 16KB RAM + **2310KB Flash**；WakeNet ≈ 180KB 内存
+- **版本坑：esp-sr 1.3.3 有命令词 bug，须用 ≥1.4.2**
+- 唤醒词：官方免费词（如 "Hi,乐鑫"）直接可用；完全自定义需乐鑫生成（收费），第一阶段用免费词
+- 参考：[ESP-SR 命令词文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_command_recognition/README.html)、[官方 Benchmark](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/benchmark/README.html)、[乐鑫语音方案页](https://www.espressif.com/zh-hans/solutions/audio-solutions/esp-skainet/overview)
+
+**④ 离线中文 TTS — 可行 ✅（乐鑫 esp-tts，集成在 esp-sr 内）**
+
+- 中文 UTF-8 文本输入，流式合成（`esp_tts_stream_synthesize()`），本地完成不依赖网络
+- 模型编进固件，约 **1.5~7MB**；默认音色（如 Yoon），**语速 0~9 档可调**（需求"语速/音量可调"初步满足，音量走播放通道）
+- 音色自然度待实测；替代方案：第三方 LingTTS（神经网络，更自然但更大）
+- 参考：[ESP-SR TTS 文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_synthesis/readme.html)
+
+**⑤ 综合评估（Flash 预算与风险）**
+
+- 当前 app 0.8MB + MultiNet5 Q8 2.3MB + WakeNet ~0.2MB + TTS 2~7MB + 白噪音资源 ≈ **6~10MB** → factory 分区需从 8MB 扩到 **10~12MB**（16MB Flash 总量充足，改 `partitions.csv` 即可，架构阶段处理）
+- 风险点：ESP-SR AFE 与 esp_codec_dev 的采样率/格式对接（集成时验证）；TTS 音色效果需真机试听；自定义唤醒词收费（先用免费词规避）
+- **总体结论：语音全链路（双麦拾音→唤醒→命令词→TTS 播报）硬件软件均可行，无阻碍项，可进入软件架构设计（#5）**
+
+> 剩余预研项（不阻塞架构设计，可并行/延后）：和风天气 API 接口验证、BLE 图片同步方案、SNTP+PCF85063 时间策略。
+
+### 6.2 待办清单
+
 **环境与基线**
 - [x] 确认本机 ESP-IDF 版本与例程要求（5.5.4）一致，完成首次 `idf.py build`（2026-11-10）
 - [x] 烧录验证通过：`idf.py -p COM<x> flash monitor`，widgets demo 屏显/触摸正常（2026-11-10）
 
 **技术选型（预研项）**
-- [ ] 离线语音识别方案：乐鑫 ESP-SR（WakeNet 唤醒词 + MultiNet 命令词），评估 Flash/PSRAM 占用与分区表影响
-- [ ] 离线中文 TTS 方案：乐鑫 esp_tts 或第三方，验证中文播报效果及语速/音量可调能力（需求标注"具体能力后续验证"）
-- [ ] 音频链路：确认板载功放/扬声器接口与播放格式（参考例程 08 与原理图），确定白噪音资源存储位置（SD 卡 / Flash 分区）
-- [ ] 麦克风硬件确认：查原理图确认板载 MIC 型号与接口（模拟/I2S/DMIC），这是离线语音识别的硬前提
+- [x] 麦克风硬件确认：ES7210 + 双模拟 MIC（2026-11-10，见 §6.1①）
+- [x] 音频链路：ES8311+NS4150B 播放；esp_codec_dev 方案移植成本低；白噪音少量 EMBED / 批量走 SD 卡（见 §6.1②）
+- [x] 离线语音识别：ESP-SR（WakeNet+MultiNet5 Q8），需 ≥1.4.2、需 PSRAM ✅（见 §6.1③）
+- [x] 离线中文 TTS：乐鑫 esp-tts，中文流式合成、语速 0~9 档 ✅（见 §6.1④）
 - [ ] 和风天气 API：账号申请、区县级天气接口验证、离线缓存策略
 - [ ] BLE 图片同步方案：手机端 App 依赖较重，评估第一阶段降级为 SD 卡导入的可行性
 - [ ] 时间基准策略：SNTP 网络对时 + PCF85063 掉电走时，RTC_INT 作闹钟中断源
@@ -200,3 +246,4 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 | 2026-11-10 | git 仓库初始化（初始提交含厂商原始代码 + 需求/进度文档）；首次 `idf.py build` 编译通过（产物 bin 801KB），记录本机 EIM 构建环境；待烧录验证 |
 | 2026-11-10 | 依赖 vendor 化：`managed_components/` 全量入库（lvgl 9.5.0 等 6 组件，约 180MB / 4780 文件），仓库共 4798 文件，clone 后可离线构建 |
 | 2026-11-10 | 烧录验证通过，进度 #4 完成。首次修改厂商代码：widgets demo profile 页个性化（头像换为 open_picture.jpg 圆形裁切 ARGB8888、名字 XiaoXUE、简介 "This is a gift from HangZhou, to XiaoXue"），提交 f792132 / 1fad4ea |
+| 2026-11-10 | 技术预研（语音与音频方向）完成：确认 ES7210 双 MIC + ES8311/NS4150B 音频硬件、esp_codec_dev 链路移植方案、ESP-SR 与 esp-tts 可行性及资源占用；结论见 §6.1，#6 转 🔶 |
