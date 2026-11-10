@@ -1,6 +1,11 @@
 /* bsp_lcd — 显示子系统（QSPI AXS15231B + 触摸 + LVGL 移植层）
- * 自厂商例程 main.c 无损迁移（S1.1）。
- * 渲染模式：双全帧 PSRAM 缓冲 + full_refresh（S1.3 将改造为横屏 direct/局部刷新）。 */
+ *
+ * 横屏 + 局部刷新（S1.2/S1.3）：
+ * - LVGL 逻辑分辨率 640×172（set_rotation 90/270 切换左右横），面板物理 172×640
+ * - DIRECT 双全帧 PSRAM 渲染缓冲（逻辑布局 640×172）
+ * - flush 仅对脏区：字节序交换 → lv_draw_sw_rotate 旋转脏区 → 按条带 DMA 发送
+ * - 触摸原始坐标为横向（x∈[0,640] 沿长边, y∈[0,172]），按当前旋转方向映射到逻辑坐标
+ *   （映射方向待真机校准，见 TOUCH_MAP_* 注释） */
 
 #include <string.h>
 
@@ -24,9 +29,20 @@
 
 static const char *TAG = "bsp_lcd";
 
+/* 面板物理分辨率（172×640 竖条） */
+#define PANEL_HOR_RES  EXAMPLE_LCD_H_RES   /* 172 */
+#define PANEL_VER_RES  EXAMPLE_LCD_V_RES   /* 640 */
+/* 横屏逻辑分辨率 */
+#define DISP_HOR_RES   EXAMPLE_LCD_V_RES   /* 640 */
+#define DISP_VER_RES   EXAMPLE_LCD_H_RES   /* 172 */
+
 #define LCD_BIT_PER_PIXEL 16
 #define BYTES_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
-#define BUFF_SIZE (EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * BYTES_PER_PIXEL)
+#define BUFF_SIZE (DISP_HOR_RES * DISP_VER_RES * BYTES_PER_PIXEL)   /* = 172*640*2 */
+#define DISP_STRIDE (DISP_HOR_RES * BYTES_PER_PIXEL)                /* 逻辑行距 1280B */
+
+/* 默认横屏方向：90（左横）。app_motion 方向自适应会运行时切换 */
+#define DEFAULT_ROTATION LV_DISPLAY_ROTATION_90
 
 #define LVGL_TICK_PERIOD_MS    5
 #define LVGL_TASK_MAX_DELAY_MS 500
@@ -37,9 +53,10 @@ static const char *TAG = "bsp_lcd";
 
 static SemaphoreHandle_t s_lvgl_mux = NULL;
 static SemaphoreHandle_t s_flush_done_sem = NULL;
-static uint8_t *s_rot_dest = NULL;        /* 旋转中转缓冲（Rotated 启用时） */
+static uint8_t *s_rot_buf = NULL;         /* 脏区旋转中转（物理取向，最大全屏） */
 static uint16_t *s_trans_buf = NULL;      /* DMA 内部 RAM 中转缓冲 */
 static esp_lcd_panel_handle_t s_panel = NULL;
+static lv_display_rotation_t s_rotation = DEFAULT_ROTATION;
 
 static const axs15231b_lcd_init_cmd_t lcd_init_cmds[] =
 {
@@ -73,99 +90,77 @@ static void bsp_lcd_reset(void)
 /* LVGL 移植                                                            */
 /* ------------------------------------------------------------------ */
 
+/* DIRECT 模式 flush：仅处理脏区（S1.3 局部刷新）
+ * 步骤：脏区字节交换 → 旋转到物理取向 s_rot_buf → 按条带 DMA 只发脏区 */
 static void bsp_lcd_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p)
 {
-    lv_draw_sw_rgb565_swap(color_p, lv_area_get_width(area) * lv_area_get_height(area));
-#if (Rotated == USER_DISP_ROT_90)
-    lv_display_rotation_t rotation = lv_display_get_rotation(disp);
-    lv_area_t rotated_area;
-    if (rotation != LV_DISPLAY_ROTATION_0)
-    {
-        lv_color_format_t cf = lv_display_get_color_format(disp);
-        /*Calculate the position of the rotated area*/
-        rotated_area = *area;
-        lv_display_rotate_area(disp, &rotated_area);
-        /*Calculate the source stride (bytes in a line) from the width of the area*/
-        uint32_t src_stride = lv_draw_buf_width_to_stride(lv_area_get_width(area), cf);
-        /*Calculate the stride of the destination (rotated) area too*/
-        uint32_t dest_stride = lv_draw_buf_width_to_stride(lv_area_get_width(&rotated_area), cf);
-
-        int32_t src_w = lv_area_get_width(area);
-        int32_t src_h = lv_area_get_height(area);
-        lv_draw_sw_rotate(color_p, s_rot_dest, src_w, src_h, src_stride, dest_stride, rotation, cf);
-        /*Use the rotated area and rotated buffer from now on*/
-        area = &rotated_area;
+    const lv_color_format_t cf = lv_display_get_color_format(disp);
+    const int32_t w = lv_area_get_width(area);
+    const int32_t h = lv_area_get_height(area);
+    if (w <= 0 || h <= 0) {
+        lv_display_flush_ready(disp);
+        return;
     }
 
-    const int flush_coun = (LVGL_SPIRAM_BUFF_LEN / LVGL_DMA_BUFF_LEN);
-    const int offgap = (EXAMPLE_LCD_V_RES / flush_coun);
-    const int dmalen = (LVGL_DMA_BUFF_LEN / 2);
-    int offsetx1 = 0;
-    int offsety1 = 0;
-    int offsetx2 = EXAMPLE_LCD_H_RES;
-    int offsety2 = offgap;
+    /* direct 模式下 color_p 为全帧基址，按逻辑布局定位脏区首像素 */
+    uint16_t *src = (uint16_t *)(color_p + (area->y1 * DISP_STRIDE) + (area->x1 * BYTES_PER_PIXEL));
 
-    uint16_t *map = (uint16_t *)s_rot_dest;
-    xSemaphoreGive(s_flush_done_sem);
-    for (int i = 0; i < flush_coun; i++)
-    {
+    /* 1) RGB565 大端交换（仅脏区逐行） */
+    for (int32_t r = 0; r < h; r++) {
+        lv_draw_sw_rgb565_swap(src + r * DISP_HOR_RES, w);
+    }
+
+    /* 2) 逻辑脏区 → 物理脏区（旋转） */
+    lv_area_t pa = *area;
+    lv_display_rotate_area(disp, &pa);
+    const int32_t pw = lv_area_get_width(&pa);    /* 物理脏区宽（≤640） */
+
+    lv_draw_sw_rotate(src, s_rot_buf, w, h, DISP_STRIDE, pw * BYTES_PER_PIXEL, s_rotation, cf);
+
+    /* 3) 分条带 DMA 发送物理脏区（条带行数受 DMA 缓冲限制） */
+    int32_t x1 = pa.x1, x2 = pa.x2, y1 = pa.y1, y2 = pa.y2;
+    int32_t max_rows = LVGL_DMA_BUFF_LEN / (pw * BYTES_PER_PIXEL);
+    if (max_rows < 1) max_rows = 1;
+    uint16_t *map = (uint16_t *)s_rot_buf;
+
+    xSemaphoreGive(s_flush_done_sem);   /* 抵消首块 Take（沿用厂商信号量节奏） */
+    while (y1 <= y2) {
+        int32_t rows = y2 - y1 + 1;
+        if (rows > max_rows) rows = max_rows;
         xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-        memcpy(s_trans_buf, map, LVGL_DMA_BUFF_LEN);
-        esp_lcd_panel_draw_bitmap(s_panel, offsetx1, offsety1, offsetx2, offsety2, s_trans_buf);
-        offsety1 += offgap;
-        offsety2 += offgap;
-        map += dmalen;
+        memcpy(s_trans_buf, map, rows * pw * BYTES_PER_PIXEL);
+        esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2, y1 + rows - 1, s_trans_buf);
+        y1 += rows;
+        map += rows * pw;
     }
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);   /* 等最后一块 DMA 完成 */
     lv_display_flush_ready(disp);
-#else
-    const int flush_coun = (LVGL_SPIRAM_BUFF_LEN / LVGL_DMA_BUFF_LEN);
-    const int offgap = (EXAMPLE_LCD_V_RES / flush_coun);
-    const int dmalen = (LVGL_DMA_BUFF_LEN / 2);
-    int offsetx1 = 0;
-    int offsety1 = 0;
-    int offsetx2 = EXAMPLE_LCD_H_RES;
-    int offsety2 = offgap;
-
-    uint16_t *map = (uint16_t *)color_p;
-    xSemaphoreGive(s_flush_done_sem);
-    for (int i = 0; i < flush_coun; i++)
-    {
-        xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-        memcpy(s_trans_buf, map, LVGL_DMA_BUFF_LEN);
-        esp_lcd_panel_draw_bitmap(s_panel, offsetx1, offsety1, offsetx2, offsety2, s_trans_buf);
-        offsety1 += offgap;
-        offsety2 += offgap;
-        map += dmalen;
-    }
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-    lv_display_flush_ready(disp);
-#endif
 }
 
+/* 触摸：原始坐标为横向（tx 沿 640 长边, ty 沿 172 短边），按旋转方向映射到逻辑坐标
+ * 映射与 lv_display_rotate_area 保持互逆（90: x=640-1-tx, y=ty; 270: x=tx, y=172-1-ty）
+ * 注：若真机实测方向不符，仅需交换/取反此处的映射式 */
 static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_data)
 {
     uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x0e, 0x0, 0x0, 0x0};
     uint8_t buff[32] = {0};
     ESP_ERROR_CHECK_WITHOUT_ABORT(i2c_master_write_read_dev(disp_touch_dev_handle, read_touchpad_cmd, 11, buff, 32));
-    uint16_t pointX;
-    uint16_t pointY;
-    pointX = (((uint16_t)buff[2] & 0x0f) << 8) | (uint16_t)buff[3];
-    pointY = (((uint16_t)buff[4] & 0x0f) << 8) | (uint16_t)buff[5];
+    uint16_t tx = (((uint16_t)buff[2] & 0x0f) << 8) | (uint16_t)buff[3];
+    uint16_t ty = (((uint16_t)buff[4] & 0x0f) << 8) | (uint16_t)buff[5];
+
     if (buff[1] > 0 && buff[1] < 5)
     {
         indev_data->state = LV_INDEV_STATE_PRESSED;
-#if (Rotated == USER_DISP_ROT_90)
-        if (pointX > EXAMPLE_LCD_H_RES) pointX = EXAMPLE_LCD_H_RES;
-        if (pointY > EXAMPLE_LCD_V_RES) pointY = EXAMPLE_LCD_V_RES;
-        indev_data->point.x = (EXAMPLE_LCD_H_RES - pointX);
-        indev_data->point.y = (EXAMPLE_LCD_V_RES - pointY);
-#else
-        if (pointX > EXAMPLE_LCD_V_RES) pointX = EXAMPLE_LCD_V_RES;
-        if (pointY > EXAMPLE_LCD_H_RES) pointY = EXAMPLE_LCD_H_RES;
-        indev_data->point.x = pointY;
-        indev_data->point.y = (EXAMPLE_LCD_V_RES - pointX);
-#endif
+        if (tx > DISP_HOR_RES - 1) tx = DISP_HOR_RES - 1;
+        if (ty > DISP_VER_RES - 1) ty = DISP_VER_RES - 1;
+        if (s_rotation == LV_DISPLAY_ROTATION_90) {
+            indev_data->point.x = (DISP_HOR_RES - 1) - tx;
+            indev_data->point.y = ty;
+        }
+        else {  /* ROTATION_270（右横） */
+            indev_data->point.x = tx;
+            indev_data->point.y = (DISP_VER_RES - 1) - ty;
+        }
     }
     else
     {
@@ -235,7 +230,14 @@ esp_err_t bsp_lcd_set_rotation(lv_display_rotation_t rot)
 {
     lv_display_t *disp = lv_display_get_default();
     if (disp == NULL) return ESP_ERR_INVALID_STATE;
+    if (rot == s_rotation) return ESP_OK;
+    if (rot != LV_DISPLAY_ROTATION_90 && rot != LV_DISPLAY_ROTATION_270) {
+        return ESP_ERR_NOT_SUPPORTED;   /* 本产品只支持左右横两个方向 */
+    }
+    s_rotation = rot;
     lv_display_set_rotation(disp, rot);
+    /* 旋转后布局改变，整屏重绘（调用方须持 LVGL 锁） */
+    lv_obj_invalidate(lv_screen_active());
     return ESP_OK;
 }
 
@@ -288,25 +290,25 @@ esp_err_t bsp_lcd_init(void)
     bsp_lcd_reset();
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
 
-    /* LVGL 移植 */
-    ESP_LOGI(TAG, "init LVGL");
+    /* LVGL 移植：物理面板 172×640 创建 + 旋转 90 → 逻辑横屏 640×172 */
+    ESP_LOGI(TAG, "init LVGL (landscape %dx%d, rotation %d)", DISP_HOR_RES, DISP_VER_RES, (int)DEFAULT_ROTATION);
     lv_init();
-    lv_display_t *disp = lv_display_create(EXAMPLE_LCD_H_RES, EXAMPLE_LCD_V_RES);
+    lv_display_t *disp = lv_display_create(PANEL_HOR_RES, PANEL_VER_RES);
     lv_display_set_flush_cb(disp, bsp_lcd_flush_cb);
 
     uint8_t *buffer_1 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
     assert(buffer_1);
     uint8_t *buffer_2 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
     assert(buffer_2);
+    s_rot_buf = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);   /* 脏区旋转中转，按最大全帧分配 */
+    assert(s_rot_buf);
     s_trans_buf = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
     assert(s_trans_buf);
-    lv_display_set_buffers(disp, buffer_1, buffer_2, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_FULL);
+
+    /* DIRECT 双全帧缓冲：渲染直接画全帧，flush 只处理脏区 */
+    lv_display_set_buffers(disp, buffer_1, buffer_2, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_user_data(disp, s_panel);
-#if (Rotated == USER_DISP_ROT_90)
-    s_rot_dest = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
-    assert(s_rot_dest);
-    lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_90);
-#endif
+    lv_display_set_rotation(disp, s_rotation);
 
     /* 触摸输入设备 */
     lv_indev_t *touch_indev = lv_indev_create();
