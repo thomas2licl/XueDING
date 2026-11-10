@@ -58,6 +58,10 @@
 | espressif/esp_io_expander_tca9554 | 2.0.3 |
 | espressif/esp_lcd_touch | 1.2.1 |
 
+**依赖管理策略（2026-11-10 起）：** `managed_components/` 全量入库（vendor 化，约 180MB / 4780 文件），
+clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、裁剪）直接改该目录，git 可追踪 diff。
+升级依赖用 `idf.py update-dependencies`，会产生大 diff，属预期。
+
 `sdkconfig.defaults` 要点：16MB Flash、Octal PSRAM 80MHz、自定义分区表（factory 8M）、
 `CONFIG_LV_OS_FREERTOS=y`、开启 Montserrat 12/16 字体、benchmark/stress/music demos。
 
@@ -109,21 +113,27 @@
 ## 4. 代码结构
 
 ```
-10_LVGL_V9_Test/
+10_LVGL_V9_Test/                # git 仓库根（2026-11-10 初始化，进度随阶段提交）
 ├── CMakeLists.txt              # 工程入口
 ├── partitions.csv              # nvs 0x6000 / phy 0x1000 / factory 8M
-├── sdkconfig(.defaults)
+├── sdkconfig.defaults          # 配置默认值（完整 sdkconfig 为生成物，已忽略）
 ├── dependencies.lock           # 组件管理器锁定版本
+├── .gitignore / .gitattributes # 忽略 build/sdkconfig/.claude 等；行尾统一 LF
 ├── 需求/
 │   └── 需求文档.md              # LocalLife V0.1 产品功能需求
 ├── main/
 │   ├── main.c                  # 全部初始化 + LVGL 移植层
 │   ├── user_config.h           # 引脚定义与功能开关
 │   └── idf_component.yml       # 声明 lvgl/axs15231b/tca9554 依赖
-└── components/
-    ├── i2c_bsp/                # I2C 总线初始化（总线0:外设, 总线1:触摸）+ 读写封装
-    └── lcd_bl_pwm_bsp/         # 背光 LEDC PWM
+├── components/
+│   ├── i2c_bsp/                # I2C 总线初始化（总线0:外设, 总线1:触摸）+ 读写封装
+│   └── lcd_bl_pwm_bsp/         # 背光 LEDC PWM
+└── managed_components/         # 构建依赖 vendor 化全量入库（git 管理）
+    ├── lvgl__lvgl/             # LVGL 9.5.0，含 demos/；二次开发改这里，diff 可追溯
+    └── espressif__*/           # axs15231b / esp_lcd_touch / tca9554 等 5 个组件
 ```
+
+> 工作区另有 `open_picture.jpg` 暂缓入库（用户待定）。
 
 ### main.c 关键实现（对后续开发重要）
 
@@ -188,3 +198,4 @@
 | 2026-11-10 | 创建文档；梳理厂商例程结构、环境依赖、硬件引脚；确认代码为未修改原始状态 |
 | 2026-11-10 | 新增 LocalLife 需求文档 V0.1（`需求/需求文档.md`），项目定位由 TPMS 显示验证调整为本地优先的智能桌面生活终端；更新项目概述、进度规划、待办清单与技术预研项 |
 | 2026-11-10 | git 仓库初始化（初始提交含厂商原始代码 + 需求/进度文档）；首次 `idf.py build` 编译通过（产物 bin 801KB），记录本机 EIM 构建环境；待烧录验证 |
+| 2026-11-10 | 依赖 vendor 化：`managed_components/` 全量入库（lvgl 9.5.0 等 6 组件，约 180MB / 4780 文件），仓库共 4798 文件，clone 后可离线构建 |
