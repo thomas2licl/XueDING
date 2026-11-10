@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS "main.c"
-    INCLUDE_DIRS ".")
+    INCLUDE_DIRS "."
+    REQUIRES bsp_common bsp_exio bsp_lcd i2c_bsp lvgl)
 
 set_source_files_properties(
     ${LV_DEMOS_SOURCES}
