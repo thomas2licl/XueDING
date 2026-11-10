@@ -51,12 +51,31 @@ static const char *TAG = "bsp_lcd";
 #define LVGL_TASK_PRIORITY     2
 #define LVGL_TASK_CORE         0
 
+/* ============ S1.7 花屏定位（临时）============
+ * BSP_LCD_SELFTEST：LVGL 启动前按物理坐标直发 10 条等宽色带（红绿蓝黄循环,
+ * 每条中央夹黑线）。横拿板子预期：竖向 10 等分色带、从某端起红绿蓝黄循环。
+ *   图案完好 → 底层(SPI/DMA/面板)健康,问题在 LVGL flush 路径;
+ *   图案也花 → 底层问题。
+ * BSP_LCD_FLUSH_LOG：前 20 次 flush 打印逻辑脏区/物理脏区坐标（串口）。 */
+#define BSP_LCD_SELFTEST       0   /* S1.7 已完成定位（结论见 flush 注释）,自检关闭 */
+#define BSP_LCD_SELFTEST_MS    4000
+#define BSP_LCD_FLUSH_LOG_CNT  0   /* S1.7 校准完成,flush 日志关闭 */
+#define BSP_LCD_FLUSH_PERF     1   /* 每 5s 一行 flush 性能汇总（帧数/平均/最大耗时） */
+
+/* RGB565 值做字节交换（面板收大端字节流） */
+#define RGB565_BE(rgb)  ((uint16_t)(((rgb) << 8) | ((rgb) >> 8)))
+
 static SemaphoreHandle_t s_lvgl_mux = NULL;
 static SemaphoreHandle_t s_flush_done_sem = NULL;
-static uint8_t *s_rot_buf = NULL;         /* 脏区旋转中转（物理取向，最大全屏） */
-static uint16_t *s_trans_buf = NULL;      /* DMA 内部 RAM 中转缓冲 */
+static uint16_t *s_trans_buf = NULL;      /* DMA 内部 RAM 中转缓冲 ×2（乒乓） */
+static uint16_t *s_trans_buf2 = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_rotation_t s_rotation = DEFAULT_ROTATION;
+
+/* 触摸报文统计（S1.7 空载重绘定位）：空载时"有点报文数">0 即假报文实锤 */
+static uint32_t s_tsamp = 0;     /* 总采样数 */
+static uint32_t s_tap_cnt = 0;   /* 有点报文数 */
+static bool s_ghost_dumped = false;   /* 假报文原始字节只 dump 一次 */
 
 static const axs15231b_lcd_init_cmd_t lcd_init_cmds[] =
 {
@@ -90,76 +109,164 @@ static void bsp_lcd_reset(void)
 /* LVGL 移植                                                            */
 /* ------------------------------------------------------------------ */
 
-/* DIRECT 模式 flush：仅处理脏区（S1.3 局部刷新）
- * 步骤：脏区字节交换 → 旋转到物理取向 s_rot_buf → 按条带 DMA 只发脏区 */
+/* 分 tile 旋转：逻辑列条带（x0..x0+block_h-1, 全高 172）→ 物理块（172×block_h）
+ * 写入 DMA RAM 目标 dst,写入时顺带完成 RGB565 大端字节交换。
+ * 相比 lv_draw_sw_rotate 的整列跳读（每像素跨 1280B,PSRAM 缓存全废）,
+ * 本实现源按 16 像素行连续读（32B 对齐 cache 行）、目标按行写 RAM——快数倍。
+ * 坐标关系（由 lv_display_rotate_area 公式推出,已四角实测验证）：
+ *   rot90 : 物理(r,c) = 逻辑(x0 + block_h-1-r, c)        物理 y=639-逻辑x
+ *   rot270: 物理(r,c) = 逻辑(x0 + r, 171-c)              物理 y=  逻辑x */
+static void rot_strip_to_block(const uint16_t *src, uint16_t *dst,
+                               int32_t x0, int32_t block_h, lv_display_rotation_t rot)
+{
+    const int32_t H = DISP_VER_RES;   /* 172,条带高=物理块宽 */
+    for (int32_t ty = 0; ty < H; ty += 16) {
+        const int32_t th = (H - ty < 16) ? (H - ty) : 16;   /* 尾 tile 高度 */
+        for (int32_t tx = 0; tx < block_h; tx += 16) {
+            uint16_t tile[16][16];   /* 512B 栈缓冲 */
+            /* 行式读 16×16 tile（源行内连续 → cache 友好） */
+            for (int32_t j = 0; j < th; j++) {
+                const uint16_t *s = src + (int32_t)(ty + j) * DISP_HOR_RES + x0 + tx;
+                for (int32_t i = 0; i < 16; i++) tile[j][i] = s[i];
+            }
+            /* 转置写 + 大端交换 */
+            if (rot == LV_DISPLAY_ROTATION_90) {
+                for (int32_t j = 0; j < th; j++)
+                    for (int32_t i = 0; i < 16; i++)
+                        dst[(block_h - 1 - (tx + i)) * PANEL_HOR_RES + (ty + j)] =
+                            (uint16_t)((tile[j][i] >> 8) | (tile[j][i] << 8));
+            }
+            else {  /* ROTATION_270 */
+                for (int32_t j = 0; j < th; j++)
+                    for (int32_t i = 0; i < 16; i++)
+                        dst[(tx + i) * PANEL_HOR_RES + (DISP_VER_RES - 1 - (ty + j))] =
+                            (uint16_t)((tile[j][i] >> 8) | (tile[j][i] << 8));
+            }
+        }
+    }
+}
+
+/* flush：分块旋转 + 乒乓 DMA + 前缀刷（S1.7 定稿）
+ *
+ * 传输契约（见 esp_lcd_axs15231b.c 注释）：QSPI 驱动仅支持从物理块 0 起顺序
+ * 连续流式写 → 每次从块 0 刷起,但只刷到覆盖脏区的最深块（前缀刷）。
+ * 乒乓双 DMA 缓冲:块 k 的旋转与块 k-1 的 DMA 传输重叠（每块提交前 Take 等
+ * 上一块 DMA 完成是 CASET 同步上总线的需要,旋转在其之前完成即已重叠）。
+ * 实测从全帧 PSRAM 旋转的 ~148ms/帧 优化到 ~15ms/帧（全屏 10 块）。 */
 static void bsp_lcd_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p)
 {
-    const lv_color_format_t cf = lv_display_get_color_format(disp);
-    const int32_t w = lv_area_get_width(area);
-    const int32_t h = lv_area_get_height(area);
-    if (w <= 0 || h <= 0) {
-        lv_display_flush_ready(disp);
-        return;
+    const int block_h = 64;                                   /* 物理块行数（172×64=22KB=单块 DMA） */
+    /* 前缀刷的最深块：脏区必须被覆盖;更深的块内容未变可跳过 */
+    const int last_blk = (s_rotation == LV_DISPLAY_ROTATION_90)
+                         ? (DISP_HOR_RES - 1 - area->x1) / block_h
+                         : area->x2 / block_h;
+    const int blk_cnt = last_blk + 1;
+    uint16_t *bufs[2] = { s_trans_buf, s_trans_buf2 };
+
+#if BSP_LCD_FLUSH_PERF
+    const int64_t t0 = esp_timer_get_time();   /* 性能打点 */
+#endif
+
+#if BSP_LCD_FLUSH_LOG_CNT > 0
+    static int s_flush_log = BSP_LCD_FLUSH_LOG_CNT;
+    if (s_flush_log > 0) {
+        s_flush_log--;
+        ESP_LOGI(TAG, "flush[%d/%d] blocks=%d rot=%d dirty(%d,%d %d,%d)",
+                 BSP_LCD_FLUSH_LOG_CNT - s_flush_log, BSP_LCD_FLUSH_LOG_CNT,
+                 blk_cnt, (int)s_rotation,
+                 (int)area->x1, (int)area->y1, (int)area->x2, (int)area->y2);
     }
+#endif
 
-    /* direct 模式下 color_p 为全帧基址，按逻辑布局定位脏区首像素 */
-    uint16_t *src = (uint16_t *)(color_p + (area->y1 * DISP_STRIDE) + (area->x1 * BYTES_PER_PIXEL));
-
-    /* 1) RGB565 大端交换（仅脏区逐行） */
-    for (int32_t r = 0; r < h; r++) {
-        lv_draw_sw_rgb565_swap(src + r * DISP_HOR_RES, w);
-    }
-
-    /* 2) 逻辑脏区 → 物理脏区（旋转） */
-    lv_area_t pa = *area;
-    lv_display_rotate_area(disp, &pa);
-    const int32_t pw = lv_area_get_width(&pa);    /* 物理脏区宽（≤640） */
-
-    lv_draw_sw_rotate(src, s_rot_buf, w, h, DISP_STRIDE, pw * BYTES_PER_PIXEL, s_rotation, cf);
-
-    /* 3) 分条带 DMA 发送物理脏区（条带行数受 DMA 缓冲限制） */
-    int32_t x1 = pa.x1, x2 = pa.x2, y1 = pa.y1, y2 = pa.y2;
-    int32_t max_rows = LVGL_DMA_BUFF_LEN / (pw * BYTES_PER_PIXEL);
-    if (max_rows < 1) max_rows = 1;
-    uint16_t *map = (uint16_t *)s_rot_buf;
-
-    xSemaphoreGive(s_flush_done_sem);   /* 抵消首块 Take（沿用厂商信号量节奏） */
-    while (y1 <= y2) {
-        int32_t rows = y2 - y1 + 1;
-        if (rows > max_rows) rows = max_rows;
-        xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-        memcpy(s_trans_buf, map, rows * pw * BYTES_PER_PIXEL);
-        esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2, y1 + rows - 1, s_trans_buf);
-        y1 += rows;
-        map += rows * pw;
+    for (int k = 0; k < blk_cnt; k++) {
+        const int32_t y0 = k * block_h;                       /* 物理块起始行 */
+        const int32_t x0 = (s_rotation == LV_DISPLAY_ROTATION_90)
+                           ? (DISP_HOR_RES - y0 - block_h)    /* rot90 ↔ 逻辑右列 */
+                           : y0;                              /* rot270 ↔ 逻辑左列 */
+        if (k > 0) {
+            xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);  /* 等上一块 DMA 完成 */
+        }
+        /* 旋转期间上一块的 DMA 仍在跑（乒乓缓冲不冲突） */
+        rot_strip_to_block((const uint16_t *)color_p, bufs[k & 1], x0, block_h, s_rotation);
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y0, PANEL_HOR_RES, y0 + block_h, bufs[k & 1]);
     }
     xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);   /* 等最后一块 DMA 完成 */
     lv_display_flush_ready(disp);
+
+#if BSP_LCD_FLUSH_PERF
+    /* 每 5s 汇总一行：期间帧数、平均/最大单帧耗时（含旋转与 DMA 等待）;
+     * 同时低频打印脏区——若空载仍有刷新,脏区位置直接指认重绘源 */
+    {
+        static int s_frames = 0;
+        static int64_t s_sum_us = 0, s_max_us = 0, s_win = 0;
+        const int64_t dt = esp_timer_get_time() - t0;
+        s_frames++; s_sum_us += dt;
+        if (dt > s_max_us) s_max_us = dt;
+        if (s_win == 0) s_win = t0;
+        else if (t0 - s_win >= 5000000) {
+            ESP_LOGI(TAG, "flush perf: %d fr, avg %d ms, max %d ms, dirty(%d,%d %d,%d), touch taps %u/%u",
+                     s_frames, (int)(s_sum_us / s_frames / 1000), (int)(s_max_us / 1000),
+                     (int)area->x1, (int)area->y1, (int)area->x2, (int)area->y2,
+                     (unsigned)s_tap_cnt, (unsigned)s_tsamp);
+            s_frames = 0; s_sum_us = 0; s_max_us = 0; s_win = 0;
+            s_tap_cnt = 0; s_tsamp = 0;
+        }
+    }
+#endif
 }
 
-/* 触摸：原始坐标为横向（tx 沿 640 长边, ty 沿 172 短边），按旋转方向映射到逻辑坐标
- * 映射与 lv_display_rotate_area 保持互逆（90: x=640-1-tx, y=ty; 270: x=tx, y=172-1-ty）
- * 注：若真机实测方向不符，仅需交换/取反此处的映射式 */
+/* 触摸：read_cb 须提供【物理面板坐标】（172×640: x 沿短边, y 沿长边）——
+ * LVGL 9 的 indev 层会自动调 lv_display_rotate_point 按当前 rotation 转成
+ * 逻辑坐标（lv_indev.c indev_pointer_proc）,不可在此手动映射（会二次旋转）。
+ * 触摸芯片报文与 USB-左视觉恒向: tx 沿长边[0,640), ty 沿短边[0,172),
+ * S1.7 四角实测标定的物理映射: ph.x = ty, ph.y = 639 - tx（两个旋转方向通用） */
+static uint16_t s_raw_tx = 0, s_raw_ty = 0;   /* 最近一次有效原始报文坐标（诊断用） */
+
 static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_data)
 {
+    LV_UNUSED(indev);
     uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x0e, 0x0, 0x0, 0x0};
     uint8_t buff[32] = {0};
     ESP_ERROR_CHECK_WITHOUT_ABORT(i2c_master_write_read_dev(disp_touch_dev_handle, read_touchpad_cmd, 11, buff, 32));
     uint16_t tx = (((uint16_t)buff[2] & 0x0f) << 8) | (uint16_t)buff[3];
     uint16_t ty = (((uint16_t)buff[4] & 0x0f) << 8) | (uint16_t)buff[5];
 
+    s_tsamp++;
+    if (buff[1] > 0 && buff[1] < 5) {
+        s_tap_cnt++;
+        /* 空载假报文 dump：距上次有点报文超过 3s（约百次采样）后首次出现,
+         * 打印原始报文字节看清内容（真手指不可能 3 秒精确不动后瞬移出现） */
+        static uint32_t s_last_tap_ms = 0;
+        const uint32_t now_ms = esp_timer_get_time() / 1000;
+        if (s_last_tap_ms != 0 && now_ms - s_last_tap_ms > 3000 && !s_ghost_dumped) {
+            s_ghost_dumped = true;
+            ESP_LOGW(TAG, "ghost touch!? raw: %02X %02X %02X %02X %02X %02X %02X %02X",
+                     buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
+        }
+        s_last_tap_ms = now_ms;
+    }
+
     if (buff[1] > 0 && buff[1] < 5)
     {
+        s_raw_tx = tx;
+        s_raw_ty = ty;
         indev_data->state = LV_INDEV_STATE_PRESSED;
-        if (tx > DISP_HOR_RES - 1) tx = DISP_HOR_RES - 1;
-        if (ty > DISP_VER_RES - 1) ty = DISP_VER_RES - 1;
-        if (s_rotation == LV_DISPLAY_ROTATION_90) {
-            indev_data->point.x = (DISP_HOR_RES - 1) - tx;
-            indev_data->point.y = ty;
-        }
-        else {  /* ROTATION_270（右横） */
-            indev_data->point.x = tx;
-            indev_data->point.y = (DISP_VER_RES - 1) - ty;
+        /* 物理面板坐标（LVGL 自动按 rotation 转逻辑坐标） */
+        indev_data->point.x = (ty > PANEL_HOR_RES - 1) ? (PANEL_HOR_RES - 1) : ty;
+        indev_data->point.y = (tx > PANEL_VER_RES - 1) ? 0 : (PANEL_VER_RES - 1 - tx);
+
+        /* S1.7 触摸标定日志:每次新按下(间隔>250ms)打一行,前 30 次 */
+        {
+            static uint32_t s_last_tap_ms = 0;
+            static int s_tap_log = 0;
+            const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            if (now_ms - s_last_tap_ms > 250 && s_tap_log < 30) {
+                s_tap_log++;
+                ESP_LOGI(TAG, "tap raw(%u,%u) phys(%d,%d) rot=%d",
+                         (unsigned)s_raw_tx, (unsigned)s_raw_ty,
+                         (int)indev_data->point.x, (int)indev_data->point.y, (int)s_rotation);
+            }
+            s_last_tap_ms = now_ms;
         }
     }
     else
@@ -168,6 +275,56 @@ static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_da
     }
 }
 
+/* 最近一次有效触摸的原始报文坐标（S1.7 校准用,正式 UI 不依赖） */
+void bsp_lcd_touch_get_raw(uint16_t *tx, uint16_t *ty)
+{
+    if (tx) *tx = s_raw_tx;
+    if (ty) *ty = s_raw_ty;
+}
+
+/* ------------------------------------------------------------------ */
+/* S1.7 花屏定位自检（临时）                                            */
+/* ------------------------------------------------------------------ */
+
+#if BSP_LCD_SELFTEST
+/* 窗口定位验证（配合 axs15231b 驱动的 RASET 实验改动）：
+ * 阶段1 顺序刷黑全屏（从 y=0 连续写,兼容驱动的流式写行为,应稳定成功）
+ * 阶段2 只写第 3 块（y 192..255）红、第 7 块（y 448..511）绿 —— 非连续、不从 0 开始
+ *   → 若红/绿出现在正确等分位置：RASET 窗口定位生效,局部刷新可用 ✓
+ *   → 若出现在错误位置/连成一片：RASET 无效,需改全帧顺序刷策略 ✗
+ * 横拿观察：屏幕 10 等分,从物理 y=0 一端数第 3 段红、第 7 段绿（y=0 在 USB 哪侧待观察） */
+static void bsp_lcd_selftest_pattern(void)
+{
+    const uint16_t black = RGB565_BE(0x0000);
+    const uint16_t red   = RGB565_BE(0xF800);
+    const uint16_t green = RGB565_BE(0x07E0);
+    const int px_cnt = LVGL_DMA_BUFF_LEN / 2;   /* 172*64 像素 */
+
+    /* 阶段1：黑屏（同一块缓冲连发 10 次,内容不变故无 DMA 竞争） */
+    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = black;
+    ESP_LOGI(TAG, "selftest: stage1 sequential black fill");
+    xSemaphoreGive(s_flush_done_sem);   /* 抵消首块 Take */
+    for (int i = 0; i < 10; i++) {
+        xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+        esp_lcd_panel_draw_bitmap(s_panel, 0, i * 64, PANEL_HOR_RES - 1, i * 64 + 63, s_trans_buf);
+    }
+    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+
+    /* 阶段2：窗口定位 —— 等上一块 DMA 完成（Take 已做）再改缓冲,无竞争 */
+    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = red;
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 192, PANEL_HOR_RES - 1, 255, s_trans_buf);
+    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+    ESP_LOGI(TAG, "selftest: stage2a RED written to band3 (y192-255)");
+
+    /* 阶段3：第 7 块绿 */
+    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = green;
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 448, PANEL_HOR_RES - 1, 511, s_trans_buf);
+    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+    ESP_LOGI(TAG, "selftest: stage2b GREEN written to band7 (y448-511)");
+    ESP_LOGI(TAG, "selftest: done. expect: black + band3 red + band7 green (count from y=0 end)");
+}
+#endif
+
 static void bsp_lcd_tick_cb(void *arg)
 {
     lv_tick_inc(LVGL_TICK_PERIOD_MS);
@@ -175,17 +332,18 @@ static void bsp_lcd_tick_cb(void *arg)
 
 static void bsp_lcd_port_task(void *arg)
 {
-    uint32_t task_delay_ms = LVGL_TASK_MAX_DELAY_MS;
+    /* S1.7：固定 10ms 周期轮询,不用 lv_timer_handler() 返回值做睡眠——
+     * 本项目界面无持续动画,timer 空闲时 handler 返回值可达数百 ms,
+     * 任务睡眠过长导致点击刷新帧被排队,体感一卡一卡。固定短周期轮询的
+     * 空转成本可忽略（handler 无到期任务时为微秒级）。 */
     for (;;)
     {
         if (bsp_lcd_lock(-1))
         {
-            task_delay_ms = lv_timer_handler();
+            lv_timer_handler();
             bsp_lcd_unlock();
         }
-        if (task_delay_ms > LVGL_TASK_MAX_DELAY_MS) task_delay_ms = LVGL_TASK_MAX_DELAY_MS;
-        else if (task_delay_ms < LVGL_TASK_MIN_DELAY_MS) task_delay_ms = LVGL_TASK_MIN_DELAY_MS;
-        vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
+        vTaskDelay(pdMS_TO_TICKS(LVGL_TASK_MIN_DELAY_MS));
     }
 }
 
@@ -239,6 +397,11 @@ esp_err_t bsp_lcd_set_rotation(lv_display_rotation_t rot)
     /* 旋转后布局改变，整屏重绘（调用方须持 LVGL 锁） */
     lv_obj_invalidate(lv_screen_active());
     return ESP_OK;
+}
+
+lv_display_rotation_t bsp_lcd_get_rotation(void)
+{
+    return s_rotation;
 }
 
 esp_err_t bsp_lcd_init(void)
@@ -300,17 +463,24 @@ esp_err_t bsp_lcd_init(void)
     assert(buffer_1);
     uint8_t *buffer_2 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
     assert(buffer_2);
-    s_rot_buf = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);   /* 脏区旋转中转，按最大全帧分配 */
-    assert(s_rot_buf);
     s_trans_buf = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
     assert(s_trans_buf);
+    s_trans_buf2 = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
+    assert(s_trans_buf2);
+
+#if BSP_LCD_SELFTEST
+    /* S1.7 临时：LVGL 启动前直发自检图案（提前开背光），观察后进入正常启动 */
+    bsp_exio_set_bl_en(true);
+    bsp_lcd_selftest_pattern();
+    vTaskDelay(pdMS_TO_TICKS(BSP_LCD_SELFTEST_MS));
+#endif
 
     /* DIRECT 双全帧缓冲：渲染直接画全帧，flush 只处理脏区 */
     lv_display_set_buffers(disp, buffer_1, buffer_2, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_user_data(disp, s_panel);
     lv_display_set_rotation(disp, s_rotation);
 
-    /* 触摸输入设备 */
+    /* 触摸输入设备（默认 30ms 采样,与厂商例程一致） */
     lv_indev_t *touch_indev = lv_indev_create();
     lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(touch_indev, bsp_lcd_touch_read_cb);

@@ -22,6 +22,13 @@ void bsp_lcd_unlock(void);
  * S1.2 起供 app_motion 方向自适应调用 */
 esp_err_t bsp_lcd_set_rotation(lv_display_rotation_t rot);
 
+/* 当前旋转方向（app_motion 防抖判定需要） */
+lv_display_rotation_t bsp_lcd_get_rotation(void);
+
+/* 最近一次有效触摸的原始报文坐标（tx 沿 640 长边, ty 沿 172 短边）
+ * S1.7 触摸映射校准诊断用,正式 UI 不依赖 */
+void bsp_lcd_touch_get_raw(uint16_t *tx, uint16_t *ty);
+
 #ifdef __cplusplus
 }
 #endif

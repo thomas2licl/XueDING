@@ -135,13 +135,14 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 
 > 工作区另有 `open_picture.jpg` 暂缓入库（用户待定）。
 
-### main.c 关键实现（对后续开发重要）
+### bsp_lcd 显示管线（S1.7 定稿，对后续开发重要）
 
-- **渲染缓冲**：双全帧 PSRAM 缓冲（172×640×2B ×2）+ `LV_DISPLAY_RENDER_MODE_FULL`；另有 DMA 内部 RAM 中转缓冲（172×64 行/块）
-- **刷屏流程**：flush 回调里把全帧按 172×64 分 10 块，逐块 `memcpy` 到 DMA buf → `esp_lcd_panel_draw_bitmap`，用二值信号量等每块 DMA 完成回调
-- **旋转**：启用 `Rotated` 时用 `lv_draw_sw_rotate` 先旋转到 PSRAM `lvgl_dest` 缓冲再分块发送（软件旋转，占 CPU）
-- **任务模型**：LVGL 任务锁互斥量，`lv_timer_handler` 跑在 pinned core 0、8KB 栈、优先级 2；tick 由 esp_timer 每 5ms 提供
-- **演示切换**：`app_main` 末尾 `lv_demo_widgets()` 生效，`lv_demo_music/stress/benchmark` 已注释可切换
+- **LVGL 逻辑横屏 640×172**：`lv_display_create(172, 640)` + `set_rotation(90/270)`，DIRECT 双全帧 PSRAM 渲染缓冲
+- **驱动契约（硬约束）**：AXS15231B QSPI 的 `draw_bitmap` 只支持"从 y=0 起、块间连续的顺序流式写"（RASET 实测无效、y>0 为 0x3C 续写）——任意脏区直写会花屏。驱动源码已加注释
+- **flush 前缀刷**：从物理块 0（172×64/块）顺序刷到覆盖脏区的最深块；每块做 tile 旋转（16×16 转置，源行连续读、目标写 DMA RAM，顺带 RGB565 大端交换——绝不能原地改渲染缓冲，DIRECT 双缓冲下 LVGL 会读它做同步/混合）；双 DMA 缓冲乒乓，旋转与传输重叠。实测从整帧 PSRAM 旋转 148ms/帧 优化到 ~20ms/帧
+- **触摸**：read_cb 供**物理面板坐标** `ph=(ty, 639-tx)`（四角实测标定，USB-左横拿恒成立），LVGL 的 `lv_display_rotate_point` 自动转逻辑坐标（`lv_indev.c:743`）
+- **LVGL 集成要点**：屏上 perf monitor 已关（空载自刷新循环根源，性能观测用串口 `flush perf`）；screen 禁滚动；控件加 EVENT_BUBBLE
+- **任务模型**：LVGL 任务固定 10ms 轮询（勿用 handler 返回值做睡眠——静态界面下会睡数百 ms 造成点击迟钝），锁互斥量，pinned core 0
 
 ---
 
@@ -267,3 +268,4 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 | 2026-11-10 | 烧录验证通过，进度 #4 完成。首次修改厂商代码：widgets demo profile 页个性化（头像换为 open_picture.jpg 圆形裁切 ARGB8888、名字 XiaoXUE、简介 "This is a gift from HangZhou, to XiaoXue"），提交 f792132 / 1fad4ea |
 | 2026-11-10 | 技术预研（语音与音频方向）完成：确认 ES7210 双 MIC + ES8311/NS4150B 音频硬件、esp_codec_dev 链路移植方案、ESP-SR 与 esp-tts 可行性及资源占用；结论见 §6.1，#6 转 🔶 |
 | 2026-11-10 | 需求文档经六轮讨论迭代 V0.2→V0.6（横屏+IMU 方向自适应、小夜灯、今昨温度对比+穿衣提醒、电源与电池、功耗档位+沙漏+手势页面限定+导航返回）；软件架构文档同步演进至 V0.6（新增 §11a 小夜灯 / §11b 电源档位 / §11c 沙漏 + 局部刷新列入 S1）；新增开发规范（§7：自研代码用 C，C++ 库可直接用）；审核通过后一并提交（2755b2b），**#5 架构设计完成** |
+| 2026-11-10 | **S1.7 显示+触摸全链路修复定稿**（历时一天的多轮真机排查）：①二分定位 AXS15231B QSPI 驱动仅支持顺序流写（RASET 无效、0x3C 续写），S1.3 的脏区条带刷是花屏根因；②flush 重写为前缀刷 + tile 旋转 + 乒乓 DMA（148ms→~20ms/帧）；③触摸四角实测标定，read_cb 改供物理坐标（LVGL indev 层自动旋转，手动映射属二次旋转）；④关闭屏上 perf monitor（sdkconfig.defaults 固化）——其自刷新循环是空载持续重绘根源；⑤LVGL 集成五条隐藏机制沉淀入项目记忆。诊断页两方向（90/270）显示+触摸验证通过，**S1.7 完成**；教训：LVGL 移植层改动必须先读源码确认机制，不可只抄厂商补丁 |

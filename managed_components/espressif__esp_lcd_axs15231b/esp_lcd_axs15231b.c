@@ -303,6 +303,9 @@ static esp_err_t panel_axs15231b_draw_bitmap(esp_lcd_panel_t *panel, int x_start
         (x_end - 1) & 0xFF,
     }, 4);
 
+    /* LocalLife S1.7 注：QSPI 模式下 RASET 实测无效（写指针不服从窗口）、
+     * y>0 的 0x3C 为"续写"——本驱动仅支持"从 y=0 起、按块顺序连续的整屏流式写"。
+     * 局部刷新策略须遵守该契约（见 bsp_lcd.c flush 实现），勿在此尝试窗口写。 */
     if (0 == axs15231b->flags.use_qspi_interface) {
         tx_param(axs15231b, io, LCD_CMD_RASET, (uint8_t[]) {
             (y_start >> 8) & 0xFF,
