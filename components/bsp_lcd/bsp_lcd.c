@@ -52,14 +52,8 @@ static const char *TAG = "bsp_lcd";
 #define LVGL_TASK_PRIORITY     2
 #define LVGL_TASK_CORE         0
 
-/* ============ S1.7 花屏定位（临时）============
- * BSP_LCD_SELFTEST：LVGL 启动前按物理坐标直发 10 条等宽色带（红绿蓝黄循环,
- * 每条中央夹黑线）。横拿板子预期：竖向 10 等分色带、从某端起红绿蓝黄循环。
- *   图案完好 → 底层(SPI/DMA/面板)健康,问题在 LVGL flush 路径;
- *   图案也花 → 底层问题。
- * BSP_LCD_FLUSH_LOG：前 20 次 flush 打印逻辑脏区/物理脏区坐标（串口）。 */
-#define BSP_LCD_SELFTEST       0   /* S1.7 已完成定位（结论见 flush 注释）,自检关闭 */
-#define BSP_LCD_SELFTEST_MS    4000
+/* ============ S1.7 排查遗留说明（自检代码已移除,结论见档案）============
+ * 驱动窗口写行为二分定位法与结论：DEVELOPMENT_PROGRESS.md §6.3/§6.4。 */
 #define BSP_LCD_FLUSH_LOG_CNT  0   /* S1.7 校准完成,flush 日志关闭 */
 #define BSP_LCD_FLUSH_PERF     1   /* 每 5s 一行 flush 性能汇总（帧数/平均/最大耗时） */
 
@@ -313,49 +307,6 @@ static void bsp_lcd_prefill_black(void)
     xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
 }
 
-/* ------------------------------------------------------------------ */
-/* S1.7 花屏定位自检（临时）                                            */
-/* ------------------------------------------------------------------ */
-
-#if BSP_LCD_SELFTEST
-/* 窗口定位验证（配合 axs15231b 驱动的 RASET 实验改动）：
- * 阶段1 顺序刷黑全屏（从 y=0 连续写,兼容驱动的流式写行为,应稳定成功）
- * 阶段2 只写第 3 块（y 192..255）红、第 7 块（y 448..511）绿 —— 非连续、不从 0 开始
- *   → 若红/绿出现在正确等分位置：RASET 窗口定位生效,局部刷新可用 ✓
- *   → 若出现在错误位置/连成一片：RASET 无效,需改全帧顺序刷策略 ✗
- * 横拿观察：屏幕 10 等分,从物理 y=0 一端数第 3 段红、第 7 段绿（y=0 在 USB 哪侧待观察） */
-static void bsp_lcd_selftest_pattern(void)
-{
-    const uint16_t black = RGB565_BE(0x0000);
-    const uint16_t red   = RGB565_BE(0xF800);
-    const uint16_t green = RGB565_BE(0x07E0);
-    const int px_cnt = LVGL_DMA_BUFF_LEN / 2;   /* 172*64 像素 */
-
-    /* 阶段1：黑屏（同一块缓冲连发 10 次,内容不变故无 DMA 竞争） */
-    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = black;
-    ESP_LOGI(TAG, "selftest: stage1 sequential black fill");
-    xSemaphoreGive(s_flush_done_sem);   /* 抵消首块 Take */
-    for (int i = 0; i < 10; i++) {
-        xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-        esp_lcd_panel_draw_bitmap(s_panel, 0, i * 64, PANEL_HOR_RES - 1, i * 64 + 63, s_trans_buf);
-    }
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-
-    /* 阶段2：窗口定位 —— 等上一块 DMA 完成（Take 已做）再改缓冲,无竞争 */
-    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = red;
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 192, PANEL_HOR_RES - 1, 255, s_trans_buf);
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-    ESP_LOGI(TAG, "selftest: stage2a RED written to band3 (y192-255)");
-
-    /* 阶段3：第 7 块绿 */
-    for (int i = 0; i < px_cnt; i++) s_trans_buf[i] = green;
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 448, PANEL_HOR_RES - 1, 511, s_trans_buf);
-    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
-    ESP_LOGI(TAG, "selftest: stage2b GREEN written to band7 (y448-511)");
-    ESP_LOGI(TAG, "selftest: done. expect: black + band3 red + band7 green (count from y=0 end)");
-}
-#endif
-
 static void bsp_lcd_tick_cb(void *arg)
 {
     lv_tick_inc(LVGL_TICK_PERIOD_MS);
@@ -503,13 +454,6 @@ esp_err_t bsp_lcd_init(void)
      * 上电随机数据的花屏）;开机图（若启用）由 app_ui 在 LVGL 首帧绘制 */
     bsp_lcd_prefill_black();
     bsp_exio_set_bl_en(true);
-
-#if BSP_LCD_SELFTEST
-    /* S1.7 临时：LVGL 启动前直发自检图案（提前开背光），观察后进入正常启动 */
-    bsp_exio_set_bl_en(true);
-    bsp_lcd_selftest_pattern();
-    vTaskDelay(pdMS_TO_TICKS(BSP_LCD_SELFTEST_MS));
-#endif
 
     /* DIRECT 双全帧缓冲：渲染直接画全帧，flush 只处理脏区 */
     lv_display_set_buffers(disp, buffer_1, buffer_2, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
