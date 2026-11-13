@@ -293,6 +293,27 @@ void bsp_lcd_touch_get_raw(uint16_t *tx, uint16_t *ty)
 }
 
 /* ------------------------------------------------------------------ */
+/* 开机启动时序（S2：防开机花屏 + 开机图接口）                          */
+/* ------------------------------------------------------------------ */
+
+/* 开机防花屏：LVGL 启动前向面板直发全屏黑色（物理坐标顺序刷,遵守驱动
+ * 顺序流写契约）,之后才点亮背光——避免背光先亮时显示面板 RAM 里的
+ * 上电随机数据造成开机瞬间花屏 */
+static void bsp_lcd_prefill_black(void)
+{
+    const uint16_t black = RGB565_BE(0x0000);
+    const int px = LVGL_DMA_BUFF_LEN / 2;
+    for (int i = 0; i < px; i++) s_trans_buf[i] = black;
+
+    xSemaphoreGive(s_flush_done_sem);
+    for (int i = 0; i < PANEL_VER_RES / 64; i++) {
+        xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+        esp_lcd_panel_draw_bitmap(s_panel, 0, i * 64, PANEL_HOR_RES, i * 64 + 64, s_trans_buf);
+    }
+    xSemaphoreTake(s_flush_done_sem, portMAX_DELAY);
+}
+
+/* ------------------------------------------------------------------ */
 /* S1.7 花屏定位自检（临时）                                            */
 /* ------------------------------------------------------------------ */
 
@@ -478,6 +499,11 @@ esp_err_t bsp_lcd_init(void)
     s_trans_buf2 = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
     assert(s_trans_buf2);
 
+    /* 启动时序：先清屏为纯黑再点亮背光（防止背光亮起瞬间显示面板
+     * 上电随机数据的花屏）;开机图（若启用）由 app_ui 在 LVGL 首帧绘制 */
+    bsp_lcd_prefill_black();
+    bsp_exio_set_bl_en(true);
+
 #if BSP_LCD_SELFTEST
     /* S1.7 临时：LVGL 启动前直发自检图案（提前开背光），观察后进入正常启动 */
     bsp_exio_set_bl_en(true);
@@ -512,7 +538,6 @@ esp_err_t bsp_lcd_init(void)
     xTaskCreatePinnedToCore(bsp_lcd_port_task, "LVGL", LVGL_TASK_STACK_SIZE, NULL, LVGL_TASK_PRIORITY, NULL, LVGL_TASK_CORE);
     xTaskCreatePinnedToCore(bsp_lcd_backlight_loop_task, "bl_loop", 4 * 1024, NULL, 2, NULL, LVGL_TASK_CORE);
 
-    bsp_exio_set_bl_en(true);
     ESP_LOGI(TAG, "bsp_lcd init done");
     return ESP_OK;
 }

@@ -7,6 +7,8 @@
  * 后续阶段本组件替换为正式页面栈/导航/主题。 */
 
 #include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "lvgl.h"
 
@@ -14,6 +16,16 @@
 #include "app_event.h"
 #include "app_power.h"
 #include "app_ui.h"
+
+/* ============ 开机图（S2 素材接入点,当前 0=跳过）============
+ * 图片规格：横屏视觉 640×172,RGB565,小端(little-endian) C 数组,
+ * 约 214KB。转换工具任选（LVGL 官方 image converter 选 "C array"/RGB565,
+ * 或 Image2Lcd 选 16 位真彩 RGB565/小端/C 语言数组）。
+ * 接入步骤：素材转成 boot_logo.c（含 lv_image_dsc_t,cf=RGB565,w=640,h=172）,
+ * BOOT_LOGO_ENABLE 置 1、BOOT_LOGO_IMG 指向该 dsc,开机显示 3s 后自动进入主界面。 */
+#define BOOT_LOGO_ENABLE    0       /* 素材到位后置 1 */
+#define BOOT_LOGO_IMG       NULL    /* const lv_image_dsc_t * */
+#define BOOT_LOGO_SHOW_MS   3000
 
 /* ============ S1.6 临时电量屏显（电压标定用,标定完成后置 0 即整体移除）============ */
 #define S16_BATTERY_LABEL   1
@@ -76,8 +88,30 @@ static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
 }
 #endif
 
+/* 开机图显示（须持 LVGL 锁调用）：立绘一帧 → 让出锁延时（不饿死 LVGL
+ * 刷新任务）→ 重新持锁返回。调用方语义不变（进入/离开均持锁） */
+static void show_boot_logo(void)
+{
+#if BOOT_LOGO_ENABLE
+    lv_obj_t *im = lv_image_create(lv_screen_active());
+    lv_image_set_src(im, BOOT_LOGO_IMG);
+    lv_obj_center(im);
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+    lv_refr_now(NULL);                       /* 立即渲染一帧显示开机图 */
+
+    bsp_lcd_unlock();
+    vTaskDelay(pdMS_TO_TICKS(BOOT_LOGO_SHOW_MS));
+    bsp_lcd_lock(-1);
+
+    lv_obj_delete(im);
+    lv_obj_invalidate(lv_screen_active());   /* 清残影,进入主界面 */
+#endif
+}
+
 esp_err_t app_ui_init(void)
 {
+    show_boot_logo();
+
     /* ============ S1 方向诊断页（临时）============
      * 逻辑屏四角色块:左上红 右上绿 左下蓝 右下黄 + 中央白圆 + TOP↑
      * 横拿板子拍照,即可一次确定正确的旋转方向与触摸映射。 */
