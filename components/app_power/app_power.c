@@ -19,17 +19,19 @@ static const char *TAG = "app_power";
 #define KEY_SHUTDOWN_HOLD_MS    2000    /* KEY1 长按关机阈值 */
 #define VBAT_FORCE_OFF_MV       3300    /* ≤此值强制关机（屏幕提示 3s） */
 
-/* 锂电电压→百分比查表（S1.6.2 标定前为典型曲线初版,按 3.45~4.20V 十档） */
+/* 锂电电压→百分比查表（S1.6.2 可调电源标定后的典型曲线,十档单调递减）
+ * 注：100% 门槛为 4130 而非 4200——充满（CV 4.2V）后拔掉充电器,电池端
+ * 电压会回落到 ~4.15V,若门槛 4200 会在拔线瞬间从 100% 掉档,体验差 */
 static uint8_t vbat_to_percent(uint16_t mv)
 {
     static const struct { uint16_t mv; uint8_t pct; } table[] = {
-        {4200, 100}, {4100, 90}, {4000, 80}, {3930, 70}, {3870, 60},
+        {4130, 100}, {4100, 90}, {4000, 80}, {3930, 70}, {3870, 60},
         {3820, 50},  {3780, 40}, {3700, 30}, {3600, 20}, {3450, 10},
     };
     for (int i = 0; i < (int)(sizeof(table) / sizeof(table[0])); i++) {
         if (mv >= table[i].mv) return table[i].pct;
     }
-    return 5;   /* <3.45V:濒临关机 */
+    return 5;   /* <3.45V:濒临关机（3.30V 由 power_task 强制关机保护） */
 }
 
 static void power_task(void *arg)
