@@ -20,6 +20,7 @@
 
 #include "lvgl.h"
 #include "esp_lcd_axs15231b.h"
+#include "driver/gpio.h"
 
 #include "user_config.h"
 #include "i2c_bsp.h"
@@ -72,10 +73,9 @@ static uint16_t *s_trans_buf2 = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_rotation_t s_rotation = DEFAULT_ROTATION;
 
-/* 触摸报文统计（S1.7 空载重绘定位）：空载时"有点报文数">0 即假报文实锤 */
+/* 触摸报文统计（perf 行输出用） */
 static uint32_t s_tsamp = 0;     /* 总采样数 */
 static uint32_t s_tap_cnt = 0;   /* 有点报文数 */
-static bool s_ghost_dumped = false;   /* 假报文原始字节只 dump 一次 */
 
 static const axs15231b_lcd_init_cmd_t lcd_init_cmds[] =
 {
@@ -222,9 +222,22 @@ static void bsp_lcd_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_
  * S1.7 四角实测标定的物理映射: ph.x = ty, ph.y = 639 - tx（两个旋转方向通用） */
 static uint16_t s_raw_tx = 0, s_raw_ty = 0;   /* 最近一次有效原始报文坐标（诊断用） */
 
+/* ---- 触摸读取策略（S1.7 定稿）----
+ * 采样 10ms 全量轮询 + 空报文去抖。该触摸芯片实测特性:
+ *  - 报文为"低频/边沿式"(按住静止时大量空报文,拖动期间有效率仅 ~4-18%)
+ *  - 空报文 ≠ 抬起:立即判 RELEASED 会造成按下状态高频振荡(事件+重绘风暴,
+ *    表现为全面卡顿) → 连续 N 次空报文才判抬起(30ms 去抖)
+ * 曾尝试 GPIO8(TCA9554 INT)门控读,实测失败:TCA9554 INT 为保持型,不读其
+ * 输入寄存器不复位,触摸期间 GPIO8 持续低,门控退化;且 INT 与报文窗口
+ * 并不同源。INT 方案留待 S2 用逻辑分析仪实测波形后再考虑(见技术档案)。 */
+#define TOUCH_RELEASE_DEBOUNCE_N   3    /* 连续 N 次空报文才判抬起 */
+
 static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_data)
 {
     LV_UNUSED(indev);
+    static uint8_t s_empty_cnt = 0;   /* 连续空报文计数（抬起去抖） */
+    static lv_point_t s_last_pt = {0};
+
     uint8_t read_touchpad_cmd[11] = {0xb5, 0xab, 0xa5, 0x5a, 0x0, 0x0, 0x0, 0x0e, 0x0, 0x0, 0x0};
     uint8_t buff[32] = {0};
     ESP_ERROR_CHECK_WITHOUT_ABORT(i2c_master_write_read_dev(disp_touch_dev_handle, read_touchpad_cmd, 11, buff, 32));
@@ -232,30 +245,19 @@ static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_da
     uint16_t ty = (((uint16_t)buff[4] & 0x0f) << 8) | (uint16_t)buff[5];
 
     s_tsamp++;
-    if (buff[1] > 0 && buff[1] < 5) {
-        s_tap_cnt++;
-        /* 空载假报文 dump：距上次有点报文超过 3s（约百次采样）后首次出现,
-         * 打印原始报文字节看清内容（真手指不可能 3 秒精确不动后瞬移出现） */
-        static uint32_t s_last_tap_ms = 0;
-        const uint32_t now_ms = esp_timer_get_time() / 1000;
-        if (s_last_tap_ms != 0 && now_ms - s_last_tap_ms > 3000 && !s_ghost_dumped) {
-            s_ghost_dumped = true;
-            ESP_LOGW(TAG, "ghost touch!? raw: %02X %02X %02X %02X %02X %02X %02X %02X",
-                     buff[0], buff[1], buff[2], buff[3], buff[4], buff[5], buff[6], buff[7]);
-        }
-        s_last_tap_ms = now_ms;
-    }
-
     if (buff[1] > 0 && buff[1] < 5)
     {
+        s_tap_cnt++;
+        s_empty_cnt = 0;
         s_raw_tx = tx;
         s_raw_ty = ty;
         indev_data->state = LV_INDEV_STATE_PRESSED;
         /* 物理面板坐标（LVGL 自动按 rotation 转逻辑坐标） */
-        indev_data->point.x = (ty > PANEL_HOR_RES - 1) ? (PANEL_HOR_RES - 1) : ty;
-        indev_data->point.y = (tx > PANEL_VER_RES - 1) ? 0 : (PANEL_VER_RES - 1 - tx);
+        s_last_pt.x = (ty > PANEL_HOR_RES - 1) ? (PANEL_HOR_RES - 1) : ty;
+        s_last_pt.y = (tx > PANEL_VER_RES - 1) ? 0 : (PANEL_VER_RES - 1 - tx);
+        indev_data->point = s_last_pt;
 
-        /* S1.7 触摸标定日志:每次新按下(间隔>250ms)打一行,前 30 次 */
+        /* 触摸日志:每次新按下(间隔>250ms)打一行,前 30 次 */
         {
             static uint32_t s_last_tap_ms = 0;
             static int s_tap_log = 0;
@@ -264,14 +266,22 @@ static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_da
                 s_tap_log++;
                 ESP_LOGI(TAG, "tap raw(%u,%u) phys(%d,%d) rot=%d",
                          (unsigned)s_raw_tx, (unsigned)s_raw_ty,
-                         (int)indev_data->point.x, (int)indev_data->point.y, (int)s_rotation);
+                         (int)s_last_pt.x, (int)s_last_pt.y, (int)s_rotation);
             }
             s_last_tap_ms = now_ms;
         }
     }
     else
     {
-        indev_data->state = LV_INDEV_STATE_RELEASED;
+        /* 空报文去抖:芯片按住期间大量空报文,立即判抬起会造成按下状态高频
+         * 振荡(事件+重绘风暴);连续 N 次空报文才判真抬起,期间维持按下+坐标 */
+        if (++s_empty_cnt >= TOUCH_RELEASE_DEBOUNCE_N) {
+            indev_data->state = LV_INDEV_STATE_RELEASED;
+        }
+        else {
+            indev_data->state = LV_INDEV_STATE_PRESSED;
+            indev_data->point = s_last_pt;
+        }
     }
 }
 
@@ -480,10 +490,13 @@ esp_err_t bsp_lcd_init(void)
     lv_display_set_user_data(disp, s_panel);
     lv_display_set_rotation(disp, s_rotation);
 
-    /* 触摸输入设备（默认 30ms 采样,与厂商例程一致） */
+    /* 触摸输入设备。采样 10ms + 空报文去抖（见 touch_read_cb 注释）:
+     * 芯片报点为低频/边沿式,10ms 采样保证快速点击(<50ms 按下)命中报文窗口,
+     * 空报文去抖防止按住期间按下状态振荡 */
     lv_indev_t *touch_indev = lv_indev_create();
     lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(touch_indev, bsp_lcd_touch_read_cb);
+    lv_timer_set_period(lv_indev_get_read_timer(touch_indev), 10);
 
     /* LVGL tick */
     esp_timer_create_args_t tick_args = {};
