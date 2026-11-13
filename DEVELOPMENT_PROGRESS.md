@@ -260,13 +260,15 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 - [ ] S2 真实 UI（按钮/列表）交互跟手验收；若仍有迟滞,启动局部刷新实验（档案见 §6.4 末尾归因）
 - [ ] bootloader 期花屏的软件根治（定制 bootloader 覆盖 `bootloader_after_init` 钩子,寄存器级拉低 IO42）——若已飞线（§6.5 方案 A）则优先级低
 
-### 6.5 开机 bootloader 期花屏档案（V0.7,2026-11-13）
+### 6.5 开机 bootloader 期花屏档案（V0.7,2026-11-13,**挂起待决**）
 
 **现象**：开机前 ~1 秒花屏,之后黑屏→界面（app 期的 prefill_black 已生效,花屏在其之前的 bootloader 阶段）。
 
 **根因**（原理图+AP3032 数据手册）：背光芯片 AP3032 的 CTRL 脚 100K 上拉+1uF,TCA9554 在 app 初始化前高阻 → CTRL 被拉高=背光自上电即亮;IO42(FB/PWM 调光)浮空 → LED 有电流;面板 RAM 上电随机 → bootloader 全程（~1s）显示随机数据。**app 代码无法干预 bootloader 阶段**（bootloader.bin 独立构建,其 `bootloader_before/after_init` 钩子需定制 bootloader 组件才能覆盖）。厂商例程同样存在（07 例程的 `pwm_off_early` 也是 app 期,治不了）。
 
-**方案**：A.（采用）**飞线 IO42 加 100K 下拉到 GND**——上电 FB 默认低=背光灭（与例程 IO42 低=灭行为一致）,app PWM 启动后正常调光,下拉不影响驱动;B.（备选,S2）定制 bootloader 钩子在加载 app 前寄存器级拉低 IO42。
+**方案（两案均未实施,待选）**：
+- **A. 硬件**：飞线 IO42 加 100K 下拉到 GND——上电 FB 默认低=背光灭（与例程 IO42 低=灭行为一致）,app PWM 启动后正常调光,下拉不影响驱动。3 分钟,一次到位。
+- **B. 软件（S2 待研究）**：定制 bootloader 覆盖 `bootloader_after_init` 钩子,加载 app 前寄存器级拉低 IO42——不动硬件,但需复制/覆盖 bootloader 组件并验证构建集成,工作量中等。
 
 ### 6.4 触摸芯片行为与读取策略档案（S1.7 定稿）
 
