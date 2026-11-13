@@ -12,7 +12,11 @@
 
 #include "bsp_lcd.h"
 #include "app_event.h"
+#include "app_power.h"
 #include "app_ui.h"
+
+/* ============ S1.6 临时电量屏显（电压标定用,标定完成后置 0 即整体移除）============ */
+#define S16_BATTERY_LABEL   1
 
 static const char *TAG = "app_ui";
 
@@ -51,6 +55,26 @@ static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *d
     LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
     ESP_LOGI(TAG, "event bus OK: ORIENTATION -> %d", *(int *)data);
 }
+
+#if S16_BATTERY_LABEL
+/* S1.6 临时:订阅电量事件,屏显电压/百分比/充电态（标定用,见顶部开关） */
+static lv_obj_t *s_batt_label;
+
+static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    const ll_battery_state_t *st = (const ll_battery_state_t *)data;
+    if (st == NULL) return;
+    /* 事件在 app_power 任务上下文回调,操作 LVGL 须持锁 */
+    if (bsp_lcd_lock(200)) {
+        lv_label_set_text_fmt(s_batt_label, "%s%umV %u%%%s",
+                              (st->vbat_mv <= 3300) ? "LOW! " : "",
+                              (unsigned)st->vbat_mv, (unsigned)st->percent,
+                              st->charging ? " CHG" : "");
+        bsp_lcd_unlock();
+    }
+}
+#endif
 
 esp_err_t app_ui_init(void)
 {
@@ -118,6 +142,16 @@ esp_err_t app_ui_init(void)
     lv_obj_add_event_cb(screen, screen_event_cb, LV_EVENT_ALL, NULL);
     /* 订阅事件（验证链路） */
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
+
+#if S16_BATTERY_LABEL
+    /* S1.6 临时:左上角红块右侧显示电池电压/百分比/充电态（标定用） */
+    s_batt_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_batt_label, lv_color_hex(0xB0BEC5), 0);
+    lv_label_set_text(s_batt_label, "----mV");
+    lv_obj_align(s_batt_label, LV_ALIGN_TOP_LEFT, 56, 8);
+    app_event_subscribe(LL_EV_BATTERY_STATE, on_battery, NULL);
+#endif
 
     ESP_LOGI(TAG, "UI orientation diagnose page ready");
     return ESP_OK;
