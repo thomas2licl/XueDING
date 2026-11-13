@@ -19,14 +19,24 @@ static const char *TAG = "app_power";
 #define KEY_SHUTDOWN_HOLD_MS    2000    /* KEY1 长按关机阈值 */
 #define VBAT_FORCE_OFF_MV       3300    /* ≤此值强制关机（屏幕提示 3s） */
 
-/* 锂电电压→百分比查表（S1.6.2 可调电源标定后的典型曲线,十档单调递减）
- * 注：100% 门槛为 4130 而非 4200——充满（CV 4.2V）后拔掉充电器,电池端
- * 电压会回落到 ~4.15V,若门槛 4200 会在拔线瞬间从 100% 掉档,体验差 */
-static uint8_t vbat_to_percent(uint16_t mv)
+/* 锂电电压→百分比（S1.6.2 标定后的典型曲线,单调递减）
+ * 满电/90% 两档按供电状态区分（2026-11-13 定）：
+ *   充电中（CV 被充电器顶在 4.2V）：≥4180 才算真满 100%,4100~4179 为 90%
+ *   电池供电（充满拔线电压回落 ~4.1x）：≥4100 保持 100%,4000~4099 为 90%
+ * 其余八档两态共用 */
+static uint8_t vbat_to_percent(uint16_t mv, bool charging)
 {
+    if (charging) {
+        if (mv >= 4180) return 100;
+        if (mv >= 4100) return 90;
+    }
+    else {
+        if (mv >= 4100) return 100;
+        if (mv >= 4000) return 90;
+    }
     static const struct { uint16_t mv; uint8_t pct; } table[] = {
-        {4130, 100}, {4100, 90}, {4000, 80}, {3930, 70}, {3870, 60},
-        {3820, 50},  {3780, 40}, {3700, 30}, {3600, 20}, {3450, 10},
+        {4000, 80}, {3930, 70}, {3870, 60}, {3820, 50},
+        {3780, 40}, {3700, 30}, {3600, 20}, {3450, 10},
     };
     for (int i = 0; i < (int)(sizeof(table) / sizeof(table[0])); i++) {
         if (mv >= table[i].mv) return table[i].pct;
@@ -47,8 +57,8 @@ static void power_task(void *arg)
         uint16_t mv = 0;
         if (bsp_power_read_vbat_mv(&mv) != ESP_OK) continue;
         st.vbat_mv = mv;
-        st.percent = vbat_to_percent(mv);
         st.charging = bsp_power_is_charging();
+        st.percent = vbat_to_percent(mv, st.charging);   /* 先取充电态,满电门槛按状态区分 */
 
         /* 串口日志（每周期一行,S1 验收口径） */
         ESP_LOGI(TAG, "vbat=%umV (~%u%%) %s",
