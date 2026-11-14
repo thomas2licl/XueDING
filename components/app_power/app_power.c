@@ -1,8 +1,12 @@
-/* app_power — 电源管理服务（S1.6 实体化：电量采集与事件）
+/* app_power — 电源管理服务（S1.6 实体化,S1.6.6 改版：电压沿检测）
  * 5s 周期：VBAT 采集 → 百分比查表 → 串口日志 + LL_EV_BATTERY_STATE 上总线。
- * 低电保护（用户需求 2026-11-13）：≤3.30V 屏幕提示 3s 后强制关机（防过放）;
- * 开机后 1s 首检（同样阈值,低电电池按键开机后即提示关机）。
- * KEY1 长按 2s 软件关机（USB 供电时关机无效——USB 强制上电,属硬件行为）。 */
+ * USB 在线检测（纯软件,零硬件,2026-11-14 用户方案,替代已弃用的 STAT 飞线）：
+ *   插 USB 瞬间充电电流抬升端电压 +0.1V 级;拔出瞬间回落（满电最弱 ~0.03V）;
+ *   正常放电缓变 ≤2mV/5s——按相邻采样差值的阶跃沿判定插拔。
+ *   去抖采用"候选+一拍验证"：超阈值拍记为候选,下一拍出现 ≥15mV 反向回落
+ *   则判负载瞬变假沿丢弃,否则确认（跳变只持续一拍,"连续两拍超阈"不成立）。
+ * 低电保护：≤3.30V 屏幕提示 3s 强制关机（USB 在线豁免）;开机 1s 首检。
+ * KEY1 长按 2s 软件关机（USB 供电时无效——USB 强制上电,硬件行为）。 */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -18,6 +22,12 @@ static const char *TAG = "app_power";
 #define POWER_BOOT_DELAY_MS     1000    /* 开机后首测延时（低电保护尽早介入） */
 #define KEY_SHUTDOWN_HOLD_MS    2000    /* KEY1 长按关机阈值 */
 #define VBAT_FORCE_OFF_MV       3300    /* ≤此值强制关机（屏幕提示 3s） */
+
+/* 电压沿检测参数（阈值经噪声 ±12mV/缓变 2mV/满电弱沿 30mV 三方权衡） */
+#define USB_PLUGIN_TH_MV        50      /* 上沿阈值:插 USB 瞬间抬升 */
+#define USB_PLUGOUT_TH_MV       25      /* 下沿阈值:拔出回落（覆盖满电弱沿） */
+#define USB_EDGE_CANCEL_MV      15      /* 候选后一拍反向回落此幅度 → 假沿丢弃 */
+#define USB_INIT_ONLINE_MV      4100    /* 开机首测初值:≥此值判 USB 在线 */
 
 /* 锂电电压→百分比（S1.6.2 标定后的典型曲线,单调递减）
  * 满电/90% 两档按供电状态区分（2026-11-13 定）：
@@ -47,6 +57,10 @@ static uint8_t vbat_to_percent(uint16_t mv, bool charging)
 static void power_task(void *arg)
 {
     bool first = true;
+    bool usb_online = false;
+    uint16_t last_mv = 0;
+    int cand = 0;                 /* 沿候选:+1 上沿 / -1 下沿 / 0 无 */
+    uint16_t cand_mv = 0;
     ll_battery_state_t st = {0};
 
     for (;;) {
@@ -56,21 +70,62 @@ static void power_task(void *arg)
 
         uint16_t mv = 0;
         if (bsp_power_read_vbat_mv(&mv) != ESP_OK) continue;
+
+        if (last_mv == 0) {
+            /* 首测：定 USB 在线初值（≥4100 大概率外电,含满电插着充电器） */
+            last_mv = mv;
+            usb_online = (mv >= USB_INIT_ONLINE_MV);
+            ESP_LOGI(TAG, "first sample %umV, usb_online=%d", (unsigned)mv, usb_online);
+        }
+        else {
+            const int delta = (int)mv - (int)last_mv;
+            last_mv = mv;
+
+            if (cand == 0) {
+                /* 无候选:检测新沿 */
+                if (delta >= USB_PLUGIN_TH_MV)        { cand = +1; cand_mv = mv; }
+                else if (delta <= -USB_PLUGOUT_TH_MV) { cand = -1; cand_mv = mv; }
+            }
+            else {
+                /* 有候选:一拍验证——反向回落 ≥15mV 判假沿（负载瞬变）,否则确认 */
+                const int back = (int)mv - (int)cand_mv;
+                if (cand == +1) {
+                    if (back <= -USB_EDGE_CANCEL_MV) {
+                        cand = 0;   /* 假沿丢弃 */
+                    }
+                    else if (!usb_online) {
+                        usb_online = true;
+                        ESP_LOGI(TAG, "USB plugged in (edge +%dmV)", delta);
+                    }
+                    /* 已在线的上沿无需处理 */
+                }
+                else {
+                    if (back >= USB_EDGE_CANCEL_MV) {
+                        cand = 0;
+                    }
+                    else if (usb_online) {
+                        usb_online = false;
+                        ESP_LOGI(TAG, "USB unplugged (edge %dmV)", delta);
+                    }
+                }
+                if (cand != 0 && ((cand == +1) == usb_online)) cand = 0;   /* 候选已消化 */
+            }
+        }
+
         st.vbat_mv = mv;
-        st.charging = bsp_power_is_charging();
-        st.percent = vbat_to_percent(mv, st.charging);   /* 先取充电态,满电门槛按状态区分 */
+        st.charging = usb_online;
+        st.percent = vbat_to_percent(mv, usb_online);
 
         /* 串口日志（每周期一行,S1 验收口径） */
         ESP_LOGI(TAG, "vbat=%umV (~%u%%) %s",
                  (unsigned)st.vbat_mv, (unsigned)st.percent,
-                 st.charging ? "CHARGING" : "battery/idle");
+                 usb_online ? "USB" : "BATTERY");
 
-        /* 每周期发事件（S1.6 屏显 + S2 UI 订阅同源） */
+        /* 每周期发事件（屏显 + S2 UI 订阅同源） */
         app_event_post(LL_EV_BATTERY_STATE, &st, sizeof(st), 0);
 
-        /* 低电强制关机：≤3.30V 屏幕提示（事件已带最新值）3s 后断电。
-         * 充电中（USB 在线）豁免——充电可救回 */
-        if (mv <= VBAT_FORCE_OFF_MV && !st.charging) {
+        /* 低电强制关机：≤3.30V 屏幕提示 3s 后断电。USB 在线豁免——充电可救回 */
+        if (mv <= VBAT_FORCE_OFF_MV && !usb_online) {
             ESP_LOGW(TAG, "LOW BATTERY %umV! shutdown in 3s", (unsigned)mv);
             vTaskDelay(pdMS_TO_TICKS(3000));
             bsp_power_shutdown();

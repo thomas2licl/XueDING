@@ -44,8 +44,8 @@
 
 /* 电源（原理图确认,2026-11-13）*/
 #define PIN_VBAT_ADC      (GPIO_NUM_4)    /* VBAT→200K→GPIO4→100K→GND,分压 1/3,ADC1_CH3 */
-#define PIN_CHG_STAT      (GPIO_NUM_5)    /* ETA6098 STAT(9脚,开漏):充电中拉低,充满/未充高阻;飞线,内部上拉 */
 #define PIN_KEY_PWR       (GPIO_NUM_16)   /* KEY1 电源键:按下拉低,硬件同时使能电池供电 MOS */
+/* 注:ETA6098 STAT 曾飞线 GPIO5 作充电检测,S1.6.6 起弃用（改电压沿检测纯软件推断）,飞线存量可不拆 */
 
 /* TCA9554 IO 扩展器引脚 */
 #define EXAMPLE_EXIO_PIN_TOUCH_INT        (1ULL << 0)

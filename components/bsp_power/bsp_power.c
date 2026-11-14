@@ -56,16 +56,16 @@ esp_err_t bsp_power_init(void)
     };
     ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_cali));
 
-    /* STAT(开漏,内部上拉) 与 KEY1(按下拉低,内部上拉) */
+    /* KEY1(按下拉低,内部上拉)。注:STAT@GPIO5 已弃用（S1.6.6 改电压沿检测） */
     gpio_config_t io_cfg = {
-        .pin_bit_mask = (1ULL << PIN_CHG_STAT) | (1ULL << PIN_KEY_PWR),
+        .pin_bit_mask = 1ULL << PIN_KEY_PWR,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&io_cfg));
 
-    ESP_LOGI(TAG, "power hw ready: vbat=GPIO%d(div 1/3), stat=GPIO%d, key=GPIO%d",
-             PIN_VBAT_ADC, PIN_CHG_STAT, PIN_KEY_PWR);
+    ESP_LOGI(TAG, "power hw ready: vbat=GPIO%d(div 1/3), key=GPIO%d",
+             PIN_VBAT_ADC, PIN_KEY_PWR);
     return ESP_OK;
 }
 
@@ -85,12 +85,6 @@ esp_err_t bsp_power_read_vbat_mv(uint16_t *vbat_mv)
     const uint32_t raw_mv = (sum_mv / VBAT_SAMPLE_CNT) * VBAT_DIV_RATIO;
     *vbat_mv = (uint16_t)((raw_mv * VBAT_CAL_FACTOR + 500) / 1000);
     return ESP_OK;
-}
-
-bool bsp_power_is_charging(void)
-{
-    /* 开漏低 = 充电中（ETA6098 datasheet:STAT low when charging） */
-    return gpio_get_level(PIN_CHG_STAT) == 0;
 }
 
 bool bsp_power_is_key_pressed(void)

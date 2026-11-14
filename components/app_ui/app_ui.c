@@ -82,7 +82,7 @@ static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
         lv_label_set_text_fmt(s_batt_label, "%s%umV %u%%%s",
                               (st->vbat_mv <= 3300) ? "LOW! " : "",
                               (unsigned)st->vbat_mv, (unsigned)st->percent,
-                              st->charging ? " CHG" : "");
+                              st->charging ? " USB" : "");
         bsp_lcd_unlock();
     }
 }
