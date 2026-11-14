@@ -77,6 +77,7 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 
 构建流程：PowerShell 激活 → `idf.py build`；烧录：`idf.py -p COM<x> flash monitor`。
 注意：从 Git Bash 调 PowerShell 跑 idf.py 会因 MSYSTEM 变量被拒（"MSys/Mingw no longer supported"），需在纯 PowerShell/ESP-IDF 终端中执行。
+COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片）——日志+烧录+JTAG 三合一,任意串口终端（PuTTY 等）可直看日志,详见 §6.6 档案。
 
 ---
 
@@ -374,3 +375,24 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 ### 9.3 开机功耗（待积累）
 
 （记录开机峰值电流/一次开机的电量消耗,需电流表或电量差值法）
+
+### 6.6 USB-Serial-JTAG 查证档案（2026-11-14）
+
+**本板 USB（COM4）的本质**：ESP32-S3 内置 USB-Serial-JTAG 控制器（引脚 GPIO19=DM / GPIO20=DP，USB-C 直连无桥接芯片），**三合一共享一根线、同时在线互不干扰**：
+
+```
+USB-Serial-JTAG（→ 电脑虚拟 COM 口）
+├── Serial（虚拟 COM 口）
+│    ├── 日志输出 ← ESP_LOG（idf monitor / PuTTY / 任意串口终端均可,不必走 IDF）
+│    └── 烧录 ← esptool 经 COM 口令芯片进 ROM 下载模式写 Flash
+└── JTAG ← 断点/单步/变量调试（OpenOCD / IDE 调试器）
+```
+- 烧录走 **Serial** 不是 JTAG;COM 口同一时刻仅一个程序可打开（串口天然属性,非功能冲突）。
+- 本项目 console 当前走 UART0（GPIO43/44）,日志经 monitor 转显;如需单 USB 线方案可改 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`（暂不动）。
+
+**DP/DM 电平检测 USB 插入：不可行（查证结论,勿再尝试）**
+1. GPIO19/20 被 USB-Serial-JTAG 外设占用,强行 gpio_config 接管会毁掉烧录/调试/日志通道;
+2. 电平语义不可靠:未插入时芯片侧悬空（读数不定）;插主机后 D+ 仍高（设备 1.5K 上拉）,D- 被主机 15K 下拉;充电器行为不一（有的短接 DP/DM、有的全悬空）;
+3. **USB-Serial-JTAG 模式下芯片不暴露 VBUS 状态寄存器**（查 `usb_serial_jtag_reg.h` 无 vbus 位;OTG 模式 GOTGCTL 有 vbusvalid 但切 OTG 即失去 Serial-JTAG,因小失大）。
+
+**定论**：充电/USB 在线检测保留 ETA6098 STAT 飞线（GPIO5,检测"充电中",信息量大于"USB 在线"）;软件推断"STAT 高 + 电压持续 ≥4100 ≈ USB 在线且充满"作冗余（架构风险⑬降级方案,可叠加）。
