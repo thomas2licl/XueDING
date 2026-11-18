@@ -71,8 +71,12 @@ static void fire(int id)
              (unsigned)APP_ALARM_RING_S);
 
     if (s_st.list[id].repeat_mode == LL_ALARM_ONCE) {
-        s_st.list[id].enabled = false;   /* 单次触发后禁用并落盘 */
+        /* 单次闹钟响完即删（手机习惯语义,同时避免残留占满槽位） */
+        const uint8_t h = s_st.list[id].hour, m = s_st.list[id].minute;
+        memset(&s_st.list[id], 0, sizeof(ll_alarm_t));
+        s_st.last_fired_tag[id] = 0;
         save_nvs();
+        ESP_LOGI(TAG, "once alarm %02u:%02u removed after fire", h, m);
     }
 }
 
