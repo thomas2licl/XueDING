@@ -20,8 +20,8 @@ static const char *TAG = "app_alarm";
 #define NVS_KEY_ALARMS  "alarms"
 
 /* 编译期测试闹钟：置 N 时 init 后自动添加一个 N 分钟后触发的单次闹钟
- * （S2.3 链路验证用,S2.4 UI 编辑接入后置回 0） */
-#define ALARM_TEST_MIN_AFTER    2
+ * （S2.3 链路验证用,已于 S2.4 验收后归零;UI 编辑闹钟待 S2.5+/需求细化） */
+#define ALARM_TEST_MIN_AFTER    0
 
 typedef struct {
     ll_alarm_t list[APP_ALARM_MAX];

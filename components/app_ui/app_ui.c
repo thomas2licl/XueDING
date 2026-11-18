@@ -1,10 +1,11 @@
-/* app_ui — LVGL 界面层（架构 §10）
- * S1 横屏验证页：
- *   - 中央显示触摸坐标（校准触摸映射的关键：按屏幕四角与中央，核对坐标）
- *   - 移动方块动画（验证 DIRECT 局部刷新流畅度）
- *   - 「旋转」按钮切换 90/270（验证双向旋转 + 触摸映射随动）
- *   - 「事件」按钮验证事件总线链路（串口 log 可见收发）
- * 后续阶段本组件替换为正式页面栈/导航/主题。 */
+/* app_ui — UI 主页 v1（S2.4,首个正式界面,替换 S1 诊断页）
+ *
+ * 布局（640×172 横条,深色夜间友好）：
+ *   左：时间大数字 HH:MM（48px,冒号每秒闪烁示活）
+ *   中：日期 + 星期 + 闹钟数
+ *   右：电池（图标档位+百分比,充电⚡标注）
+ *   顶：响铃横幅（闹钟触发时弹出,STOP 停铃;30s 无操作自灭）
+ * 中文字体未引入（架构 §7.6 规划中）,日期星期暂用数字/英文。 */
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -15,6 +16,8 @@
 #include "bsp_lcd.h"
 #include "app_event.h"
 #include "app_power.h"
+#include "app_clock.h"
+#include "app_alarm.h"
 #include "app_ui.h"
 
 /* ============ 开机图（S2 素材接入点,当前 0=跳过）============
@@ -27,76 +30,28 @@
 #define BOOT_LOGO_IMG       NULL    /* const lv_image_dsc_t * */
 #define BOOT_LOGO_SHOW_MS   3000
 
-/* ============ S1.6 临时电量屏显（电压标定用,标定完成后置 0 即整体移除）============ */
-#define S16_BATTERY_LABEL   1
-
 static const char *TAG = "app_ui";
 
-static lv_obj_t *s_coord_label;
+/* ---- 主页控件 ---- */
+static lv_obj_t *s_time_label;     /* HH:MM 大数字 */
+static lv_obj_t *s_date_label;     /* 2026-11-18 */
+static lv_obj_t *s_wday_label;     /* WED  🔔n */
+static lv_obj_t *s_batt_label;     /* 电池 */
+static lv_obj_t *s_alarm_banner;   /* 响铃横幅（默认隐藏） */
 
-/* 屏幕触摸事件：按下瞬间取一次坐标（逻辑+原始报文,S1.7 校准映射用）
- * 注意：不要在 PRESSING 持续更新——每次文本变化触发全帧刷新(顺序流写契约,
- * ≈65ms/帧),拖动会明显卡顿;点击式取数对校准完全够用且流畅 */
-static void screen_event_cb(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_PRESSED) {
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        uint16_t tx, ty;
-        bsp_lcd_touch_get_raw(&tx, &ty);
-        lv_label_set_text_fmt(s_coord_label, "L(%d,%d) R(%d,%d)", (int)p.x, (int)p.y, (int)tx, (int)ty);
-    }
-}
+static uint8_t s_last_sec = 0xFF;
 
-/* 旋转切换按钮 */
-static void rot_btn_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    lv_display_rotation_t cur = lv_display_get_rotation(lv_display_get_default());
-    lv_display_rotation_t next = (cur == LV_DISPLAY_ROTATION_90) ? LV_DISPLAY_ROTATION_270
-                                                                 : LV_DISPLAY_ROTATION_90;
-    bsp_lcd_set_rotation(next);
-    /* 同步广播方向事件（S1.5 起 app_motion 是该事件的生产者,此处模拟） */
-    app_event_post(LL_EV_ORIENTATION, &next, sizeof(next), 0);
-}
+/* ---- 配色 ---- */
+#define COL_BG      0x101418
+#define COL_FG      0xE8EAED
+#define COL_DIM     0x9AA0A6
+#define COL_ACCENT  0x8AB4F8
 
-/* 事件订阅示例（验证总线：收到后在串口打印） */
-static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
-    ESP_LOGI(TAG, "event bus OK: ORIENTATION -> %d", *(int *)data);
-}
+static const char *const k_weekday[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
 
-/* S2.3 闹钟事件链路验证（S2.4 换成真正的闹钟弹窗 UI） */
-static void on_alarm_fired(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
-    ESP_LOGI(TAG, "event bus OK: ALARM_FIRED, id=%d (UI 弹窗 S2.4 接入)", *(int *)data);
-}
-
-#if S16_BATTERY_LABEL
-/* S1.6 临时:订阅电量事件,屏显电压/百分比/充电态（标定用,见顶部开关） */
-static lv_obj_t *s_batt_label;
-
-static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
-    const ll_battery_state_t *st = (const ll_battery_state_t *)data;
-    if (st == NULL) return;
-    /* 事件在 app_power 任务上下文回调,操作 LVGL 须持锁 */
-    if (bsp_lcd_lock(200)) {
-        lv_label_set_text_fmt(s_batt_label, "%s%umV %u%%%s",
-                              (st->vbat_mv <= 3300) ? "LOW! " : "",
-                              (unsigned)st->vbat_mv, (unsigned)st->percent,
-                              st->charging ? " USB" : "");
-        bsp_lcd_unlock();
-    }
-}
-#endif
-
-/* 开机图显示（须持 LVGL 锁调用）：立绘一帧 → 让出锁延时（不饿死 LVGL
- * 刷新任务）→ 重新持锁返回。调用方语义不变（进入/离开均持锁） */
+/* ------------------------------------------------------------------ */
+/* 开机图（须持 LVGL 锁调用）：立绘一帧 → 让锁延时 → 重新持锁返回 */
+/* ------------------------------------------------------------------ */
 static void show_boot_logo(void)
 {
 #if BOOT_LOGO_ENABLE
@@ -115,86 +70,173 @@ static void show_boot_logo(void)
 #endif
 }
 
+/* ------------------------------------------------------------------ */
+/* 主页 1s 刷新（lv_timer 回调跑在 LVGL 任务=锁内）                     */
+/* ------------------------------------------------------------------ */
+static void home_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    const bsp_rtc_datetime_t *now = app_clock_get_time();
+    if (now == NULL) {
+        lv_label_set_text(s_time_label, "--:--");
+        return;
+    }
+
+    if (now->second != s_last_sec) {          /* 每秒一次（冒号闪烁+秒变化） */
+        s_last_sec = now->second;
+        lv_label_set_text_fmt(s_time_label, "%02u%c%02u",
+                              now->hour, (now->second & 1) ? ':' : ' ', now->minute);
+
+        /* 日期/星期/闹钟数只在分钟跳变时更新（避免每秒无谓重绘 2 个区域） */
+        static uint8_t last_min = 0xFF;
+        if (now->minute != last_min) {
+            last_min = now->minute;
+            lv_label_set_text_fmt(s_date_label, "%04u-%02u-%02u",
+                                  (unsigned)now->year, now->month, now->day);
+            ll_alarm_t alarms[APP_ALARM_MAX];
+            const int n = app_alarm_get_all(alarms, APP_ALARM_MAX);
+            int enabled = 0;
+            for (int i = 0; i < n; i++) {
+                if (alarms[i].enabled) enabled++;
+            }
+            lv_label_set_text_fmt(s_wday_label, "%s  " LV_SYMBOL_BELL " %d",
+                                  k_weekday[now->weekday % 7], enabled);
+        }
+    }
+
+    /* 响铃横幅随状态显隐（30s 无操作 app_alarm 自停后横幅收起） */
+    const bool ringing = app_alarm_is_ringing();
+    const bool shown = !lv_obj_has_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
+    if (ringing != shown) {
+        (ringing ? lv_obj_clear_flag : lv_obj_add_flag)(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* 事件回调（app_power/app_alarm 任务上下文,操作 LVGL 须持锁）           */
+/* ------------------------------------------------------------------ */
+static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    const ll_battery_state_t *st = (const ll_battery_state_t *)data;
+    if (st == NULL) return;
+    if (!bsp_lcd_lock(200)) return;
+
+    /* 电量分档图标（LVGL 内置 symbol,含于 montserrat 字体） */
+    const char *icon = LV_SYMBOL_BATTERY_FULL;
+    if (st->percent < 20)      icon = LV_SYMBOL_BATTERY_1;
+    else if (st->percent < 50) icon = LV_SYMBOL_BATTERY_2;
+    else if (st->percent < 90) icon = LV_SYMBOL_BATTERY_3;
+    lv_label_set_text_fmt(s_batt_label, "%s%s %u%%",
+                          st->charging ? LV_SYMBOL_CHARGE : "",
+                          icon, (unsigned)st->percent);
+    if (st->vbat_mv <= 3300) {
+        lv_obj_set_style_text_color(s_batt_label, lv_color_hex(0xF28B82), 0);   /* 低电红 */
+    } else {
+        lv_obj_set_style_text_color(s_batt_label, lv_color_hex(COL_FG), 0);
+    }
+    bsp_lcd_unlock();
+}
+
+static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    ESP_LOGI(TAG, "event bus OK: ORIENTATION -> %d", *(int *)data);
+}
+
+static void on_alarm_fired(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    ESP_LOGI(TAG, "event bus OK: ALARM_FIRED, id=%d", *(int *)data);
+    /* 横幅显隐由 home_timer_cb 每秒检查 is_ringing 统一处理（避免此处重复持锁逻辑） */
+}
+
+/* 响铃横幅 STOP 按钮 */
+static void alarm_stop_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    app_alarm_stop();
+    lv_obj_add_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ------------------------------------------------------------------ */
+/* 主页构建                                                             */
+/* ------------------------------------------------------------------ */
+static void create_home_page(void)
+{
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_color(screen, lv_color_hex(COL_BG), 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 时间大数字（中偏左,垂直居中）——原生 48px（内置 Montserrat 上限）。
+     * 注意:勿用 transform_scale 放大文本——变换对象走图层渲染路径
+     * （每帧 malloc 大缓冲+重绘,LVGL 任务占满 core0 饿死 IDLE 触发看门狗,
+     * 2026-11-18 实测）。72px+ 大字等 §7.6 中文字体阶段以自定义字体文件实现 */
+    s_time_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(s_time_label, lv_color_hex(COL_FG), 0);
+    lv_label_set_text(s_time_label, "--:--");
+    lv_obj_align(s_time_label, LV_ALIGN_CENTER, -150, 0);
+
+    /* 日期（中） */
+    s_date_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_date_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_date_label, lv_color_hex(COL_DIM), 0);
+    lv_label_set_text(s_date_label, "----");
+    lv_obj_align(s_date_label, LV_ALIGN_CENTER, 40, -32);
+
+    /* 星期 + 闹钟数（中,日期下方） */
+    s_wday_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_wday_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_wday_label, lv_color_hex(COL_ACCENT), 0);
+    lv_label_set_text(s_wday_label, "---");
+    lv_obj_align(s_wday_label, LV_ALIGN_CENTER, 40, 6);
+
+    /* 电池（右） */
+    s_batt_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(s_batt_label, lv_color_hex(COL_FG), 0);
+    lv_label_set_text(s_batt_label, LV_SYMBOL_BATTERY_FULL " --%");
+    lv_obj_align(s_batt_label, LV_ALIGN_RIGHT_MID, -30, 0);
+
+    /* 响铃横幅（顶部,默认隐藏） */
+    s_alarm_banner = lv_obj_create(screen);
+    lv_obj_set_size(s_alarm_banner, 640, 40);
+    lv_obj_align(s_alarm_banner, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_alarm_banner, lv_color_hex(0xB3261E), 0);
+    lv_obj_set_style_border_width(s_alarm_banner, 0, 0);
+    lv_obj_set_style_radius(s_alarm_banner, 0, 0);
+    lv_obj_clear_flag(s_alarm_banner, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *banner_text = lv_label_create(s_alarm_banner);
+    lv_obj_set_style_text_font(banner_text, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(banner_text, lv_color_white(), 0);
+    lv_label_set_text(banner_text, LV_SYMBOL_BELL " Alarm");
+    lv_obj_align(banner_text, LV_ALIGN_LEFT_MID, 16, 0);
+
+    lv_obj_t *btn_stop = lv_button_create(s_alarm_banner);
+    lv_obj_set_size(btn_stop, 90, 30);
+    lv_obj_align(btn_stop, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_add_event_cb(btn_stop, alarm_stop_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *btn_lab = lv_label_create(btn_stop);
+    lv_label_set_text(btn_lab, "STOP");
+    lv_obj_center(btn_lab);
+
+    lv_obj_add_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
+
+    /* 1s 刷新（时间/秒闪烁/响铃横幅） */
+    lv_timer_create(home_timer_cb, 1000, NULL);
+}
+
 esp_err_t app_ui_init(void)
 {
     show_boot_logo();
+    create_home_page();
 
-    /* ============ S1 方向诊断页（临时）============
-     * 逻辑屏四角色块:左上红 右上绿 左下蓝 右下黄 + 中央白圆 + TOP↑
-     * 横拿板子拍照,即可一次确定正确的旋转方向与触摸映射。 */
-    lv_obj_t *screen = lv_screen_active();
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x101418), 0);
-    /* 禁止屏幕滚动：诊断页无滚动需求;手指微动会被判定为拖动 → 滚动/回弹动画
-     * 连续触发全帧刷新(顺序流写契约 ≈65ms/帧) → 交互卡顿 */
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* 四角色块（各 48×36） */
-    static const struct { lv_align_t align; uint32_t color; } corners[4] = {
-        {LV_ALIGN_TOP_LEFT,     0xE53935},  /* 左上 红 */
-        {LV_ALIGN_TOP_RIGHT,    0x43A047},  /* 右上 绿 */
-        {LV_ALIGN_BOTTOM_LEFT,  0x1E88E5},  /* 左下 蓝 */
-        {LV_ALIGN_BOTTOM_RIGHT, 0xFDD835},  /* 右下 黄 */
-    };
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *c = lv_obj_create(screen);
-        lv_obj_set_size(c, 48, 36);
-        lv_obj_set_align(c, corners[i].align);
-        lv_obj_set_style_bg_color(c, lv_color_hex(corners[i].color), 0);
-        lv_obj_set_style_border_width(c, 0, 0);
-        lv_obj_set_style_radius(c, 0, 0);
-        lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(c, LV_OBJ_FLAG_EVENT_BUBBLE);   /* 事件冒泡:点击控件也更新坐标 label */
-    }
-
-    /* 中央白圆 */
-    lv_obj_t *circle = lv_obj_create(screen);
-    lv_obj_set_size(circle, 40, 40);
-    lv_obj_align(circle, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(circle, lv_color_white(), 0);
-    lv_obj_set_style_border_width(circle, 0, 0);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(circle, LV_OBJ_FLAG_EVENT_BUBBLE);
-
-    /* TOP↑ 大字（顶部居中,定义逻辑"上"） */
-    lv_obj_t *top = lv_label_create(screen);
-    lv_label_set_text(top, "TOP ^");
-    lv_obj_set_style_text_font(top, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(top, lv_color_white(), 0);
-    lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 40);
-
-    /* 触摸坐标（点击瞬间更新一次） */
-    s_coord_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_coord_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(s_coord_label, lv_color_hex(0xB0BEC5), 0);
-    lv_label_set_text(s_coord_label, "touch: --");
-    lv_obj_align(s_coord_label, LV_ALIGN_BOTTOM_MID, 0, -56);
-
-    /* 旋转切换按钮（一次烧录可测两个方向;放大便于点击） */
-    lv_obj_t *btn_rot = lv_button_create(screen);
-    lv_obj_set_size(btn_rot, 180, 48);
-    lv_obj_align(btn_rot, LV_ALIGN_BOTTOM_MID, 0, -4);
-    lv_obj_add_event_cb(btn_rot, rot_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lab1 = lv_label_create(btn_rot);
-    lv_label_set_text(lab1, "ROT 90/270");
-    lv_obj_center(lab1);
-
-    /* 屏幕（全局）触摸事件 */
-    lv_obj_add_event_cb(screen, screen_event_cb, LV_EVENT_ALL, NULL);
-    /* 订阅事件（验证链路） */
+    app_event_subscribe(LL_EV_BATTERY_STATE, on_battery, NULL);
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
     app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
 
-#if S16_BATTERY_LABEL
-    /* S1.6 临时:左上角红块右侧显示电池电压/百分比/充电态（标定用） */
-    s_batt_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(s_batt_label, lv_color_hex(0xB0BEC5), 0);
-    lv_label_set_text(s_batt_label, "----mV");
-    lv_obj_align(s_batt_label, LV_ALIGN_TOP_LEFT, 56, 8);
-    app_event_subscribe(LL_EV_BATTERY_STATE, on_battery, NULL);
-#endif
-
-    ESP_LOGI(TAG, "UI orientation diagnose page ready");
+    ESP_LOGI(TAG, "home page v1 ready");
     return ESP_OK;
 }
