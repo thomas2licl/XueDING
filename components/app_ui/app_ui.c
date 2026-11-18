@@ -68,6 +68,13 @@ static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *d
     ESP_LOGI(TAG, "event bus OK: ORIENTATION -> %d", *(int *)data);
 }
 
+/* S2.3 闹钟事件链路验证（S2.4 换成真正的闹钟弹窗 UI） */
+static void on_alarm_fired(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    ESP_LOGI(TAG, "event bus OK: ALARM_FIRED, id=%d (UI 弹窗 S2.4 接入)", *(int *)data);
+}
+
 #if S16_BATTERY_LABEL
 /* S1.6 临时:订阅电量事件,屏显电压/百分比/充电态（标定用,见顶部开关） */
 static lv_obj_t *s_batt_label;
@@ -176,6 +183,7 @@ esp_err_t app_ui_init(void)
     lv_obj_add_event_cb(screen, screen_event_cb, LV_EVENT_ALL, NULL);
     /* 订阅事件（验证链路） */
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
+    app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
 
 #if S16_BATTERY_LABEL
     /* S1.6 临时:左上角红块右侧显示电池电压/百分比/充电态（标定用） */
