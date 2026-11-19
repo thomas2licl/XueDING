@@ -1,11 +1,12 @@
-/* app_ui — UI 主页 v1（S2.4,首个正式界面,替换 S1 诊断页）
+/* app_ui — UI 主页 v1（S2.4,首个正式界面;U1 起挂入横滑导航第 1 页）
  *
- * 布局（640×172 横条,深色夜间友好）：
+ * 布局（640×172 横条,深色夜间友好）——**夜间模式基准样式,勿删（需求 V0.8）**：
  *   左：时间大数字 HH:MM（48px,冒号每秒闪烁示活）
  *   中：日期 + 星期 + 闹钟数
  *   右：电池（图标档位+百分比,充电⚡标注）
  *   顶：响铃横幅（闹钟触发时弹出,STOP 停铃;30s 无操作自灭）
- * 中文字体未引入（架构 §7.6 规划中）,日期星期暂用数字/英文。 */
+ * 中文字体未引入（U2 规划中）,日期星期暂用数字/英文。
+ * 页面级布局/配色在 U3 主页 v2（设计稿三栏）时拆日间/夜间两套,本文件保留为夜间版。 */
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -19,6 +20,7 @@
 #include "app_clock.h"
 #include "app_alarm.h"
 #include "app_ui.h"
+#include "app_ui_nav.h"
 
 /* ============ 开机图（2026-11-19 素材已接入）============
  * 素材 2048×768 PNG → 640×172 RGB565 小端（转换脚本处理,见 boot_logo.c 注释）,
@@ -36,6 +38,7 @@ static lv_obj_t *s_date_label;     /* 2026-11-18 */
 static lv_obj_t *s_wday_label;     /* WED  🔔n */
 static lv_obj_t *s_batt_label;     /* 电池 */
 static lv_obj_t *s_alarm_banner;   /* 响铃横幅（默认隐藏） */
+static lv_timer_t *s_home_timer;   /* 1s 刷新（导航 on_hide 挂起/on_show 恢复） */
 
 static uint8_t s_last_sec = 0xFF;
 
@@ -62,9 +65,7 @@ static void show_boot_logo(void)
     bsp_lcd_unlock();
     vTaskDelay(pdMS_TO_TICKS(BOOT_LOGO_SHOW_MS));
     bsp_lcd_lock(-1);
-
-    lv_obj_delete(im);
-    lv_obj_invalidate(lv_screen_active());   /* 清残影,进入主界面 */
+    /* 结束后不删图：app_ui_nav_init 直接切到主页 screen,boot 屏整体退场无残影 */
 #endif
 }
 
@@ -158,11 +159,11 @@ static void alarm_stop_btn_cb(lv_event_t *e)
 }
 
 /* ------------------------------------------------------------------ */
-/* 主页构建                                                             */
+/* 主页构建（独立 screen,U1 起由 app_ui_nav 持有）                        */
 /* ------------------------------------------------------------------ */
-static void create_home_page(void)
+static lv_obj_t *home_create(void)
 {
-    lv_obj_t *screen = lv_screen_active();
+    lv_obj_t *screen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen, lv_color_hex(COL_BG), 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -223,18 +224,54 @@ static void create_home_page(void)
     lv_obj_add_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
 
     /* 1s 刷新（时间/秒闪烁/响铃横幅） */
-    lv_timer_create(home_timer_cb, 1000, NULL);
+    s_home_timer = lv_timer_create(home_timer_cb, 1000, NULL);
+    return screen;
 }
+
+/* 导航生命周期：离开主页挂起刷新,回主页恢复（LVGL 任务上下文,免锁） */
+static void home_on_hide(void)
+{
+    if (s_home_timer) lv_timer_pause(s_home_timer);
+}
+
+static void home_on_show(void)
+{
+    if (s_home_timer) lv_timer_resume(s_home_timer);
+}
+
+/* ------------------------------------------------------------------ */
+/* 一级页面表（UI 跟踪 §1 顺序定稿;占位页随 U3~U11 逐页替换为真页面）      */
+/* ------------------------------------------------------------------ */
+static lv_obj_t *ph_weather(void)  { return app_ui_nav_placeholder("Weather",  LV_SYMBOL_GPS); }
+static lv_obj_t *ph_alarms(void)   { return app_ui_nav_placeholder("Alarms",   LV_SYMBOL_BELL); }
+static lv_obj_t *ph_reminders(void){ return app_ui_nav_placeholder("Reminders",LV_SYMBOL_LIST); }
+static lv_obj_t *ph_sound(void)    { return app_ui_nav_placeholder("Sound",    LV_SYMBOL_AUDIO); }
+static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("Photos",   LV_SYMBOL_IMAGE); }
+static lv_obj_t *ph_hourglass(void){ return app_ui_nav_placeholder("Hourglass",LV_SYMBOL_LOOP); }
+static lv_obj_t *ph_nightlight(void){ return app_ui_nav_placeholder("NightLight", LV_SYMBOL_EYE_OPEN); }
+static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("Settings", LV_SYMBOL_SETTINGS); }
+
+static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
+    { .name = "Home",      .create = home_create,     .on_show = home_on_show, .on_hide = home_on_hide },
+    { .name = "Weather",   .create = ph_weather },
+    { .name = "Alarms",    .create = ph_alarms },
+    { .name = "Reminders", .create = ph_reminders },
+    { .name = "Sound",     .create = ph_sound },
+    { .name = "Photos",    .create = ph_photos },
+    { .name = "Hourglass", .create = ph_hourglass },
+    { .name = "NightLight",.create = ph_nightlight },
+    { .name = "Settings",  .create = ph_settings },
+};
 
 esp_err_t app_ui_init(void)
 {
     show_boot_logo();
-    create_home_page();
+    app_ui_nav_init(k_pages, UI_PAGE_COUNT);   /* 建 9 页+页点+手势,瞬时进主页 */
 
     app_event_subscribe(LL_EV_BATTERY_STATE, on_battery, NULL);
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
     app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
 
-    ESP_LOGI(TAG, "home page v1 ready");
+    ESP_LOGI(TAG, "UI ready: home v1 + swipe nav (%d pages)", UI_PAGE_COUNT);
     return ESP_OK;
 }

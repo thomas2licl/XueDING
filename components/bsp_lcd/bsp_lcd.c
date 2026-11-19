@@ -66,6 +66,7 @@ static uint16_t *s_trans_buf = NULL;      /* DMA 内部 RAM 中转缓冲 ×2（�
 static uint16_t *s_trans_buf2 = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_rotation_t s_rotation = DEFAULT_ROTATION;
+static lv_indev_t *s_touch_indev = NULL;   /* 供 UI 层读手势方向（U1 横滑导航） */
 
 /* 触摸报文统计（perf 行输出用） */
 static uint32_t s_tsamp = 0;     /* 总采样数 */
@@ -386,6 +387,11 @@ lv_display_rotation_t bsp_lcd_get_rotation(void)
     return s_rotation;
 }
 
+lv_indev_t *bsp_lcd_get_touch_indev(void)
+{
+    return s_touch_indev;
+}
+
 esp_err_t bsp_lcd_init(void)
 {
     ESP_LOGI(TAG, "init backlight pwm");
@@ -467,6 +473,7 @@ esp_err_t bsp_lcd_init(void)
     lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(touch_indev, bsp_lcd_touch_read_cb);
     lv_timer_set_period(lv_indev_get_read_timer(touch_indev), 10);
+    s_touch_indev = touch_indev;
 
     /* LVGL tick */
     esp_timer_create_args_t tick_args = {};

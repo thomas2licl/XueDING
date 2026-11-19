@@ -76,7 +76,9 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 | 激活脚本（PowerShell） | `. C:\Espressif\tools\Microsoft.v5.5.4.PowerShell_profile.ps1` |
 
 构建流程：PowerShell 激活 → `idf.py build`；烧录：`idf.py -p COM<x> flash monitor`。
-注意：从 Git Bash 调 PowerShell 跑 idf.py 会因 MSYSTEM 变量被拒（"MSys/Mingw no longer supported"），需在纯 PowerShell/ESP-IDF 终端中执行。
+注意：从 Git Bash 调 PowerShell 跑 idf.py 会因 MSYSTEM 变量被拒（"MSys/Mingw no longer supported"）——**可解（2026-11-19 实测）**：Git Bash 一条龙命令
+`powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item Env:MSYSTEM; . 'C:\Espressif\tools\Microsoft.v5.5.4.PowerShell_profile.ps1'; Set-Location <项目目录>; idf.py build"`
+（Bypass 过执行策略 + Remove-Item Env:MSYSTEM 过环境检查;`env -u MSYSTEM` 对该变量无效）。
 COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片）——日志+烧录+JTAG 三合一,任意串口终端（PuTTY 等）可直看日志,详见 §6.6 档案。
 
 ---
@@ -376,6 +378,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 | 2026-11-18 | **S2.3 app_alarm 完成**：闹钟引擎实体化（NV 存储断电不丢/单次触发自动禁用/每日重复/同分钟去重/LL_EV_ALARM_FIRED 事件/30s 无操作自停铃）;app_storage 实体化（NVS 初始化,namespace "ll"）。真机验证：测试闹钟（开机+2min）精确触发、事件链路（app_ui 订阅日志）、自动停铃、单次禁用落盘全部通过 |
 | 2026-11-18 | **S2.1+S2.2 完成（bsp_rtc + app_clock）**：PCF85063 纯 C 驱动（BCD/Zeller 星期/OS 有效性检测）+时间服务（1s 读缓存/编译时刻自动校时/统一校时入口）。真机验证：走时精度对比手机通过（±20ppm 档内）;**断电走时实测通过——风险⑮ 消解：PCF85063 断电保持走时,关机后闹钟可用的前提成立**。SNTP 对时归 S5 |
 | 2026-11-13 | **电量满格门槛按供电状态双门限定稿**：充电中（CV 被顶在 4.2V）≥4180 才显 100%（真满）,4100~4179 显 90%;电池供电（充满拔线回落 ~4.1x）≥4100 保持 100%,4000~4099 显 90%。其余八档两态共用,曲线单调。此前单门槛 4200 会在拔线瞬间从 100% 掉档。S2 UI 沿用 `ll_battery_state_t.percent` 不受影响 |
+| 2026-11-19 | **U1 横滑导航框架完成**（UI 跟踪 U 系列）：新增 `app_ui_nav` 组件（9 页注册表/indev 级手势订阅/MOVE 切页 200ms 防重入/top layer 页点指示器/占位页工厂）;app_ui 主页 v1 **布局零改动**挂为第 1 页+生命周期钩子（离页暂停 1s timer）;bsp_lcd 暴露触摸 indev。**源码级确认三条机制**（写入头注释）：GESTURE 事件不冒泡到 screen（订阅 indev 级）、MOVE_LEFT=新屏从右滑入、滚动控件消费滑动时不触发手势（"滑动控件优先"由 LVGL 天然保证）。真机验收：往返 8 连切全命中、到头不越界、动画 avg 18ms/帧 max 30ms、**低频报点下手势判定可靠（担忧解除——单点大位移易累计超 50px 阈值）**。另：Git Bash 一条龙编译命令入档（§2,PowerShell Bypass+删 MSYSTEM） |
 | 2026-11-19 | **UI 导航模型定稿（横滑切换）+ UI 跟踪文档建立**：引入设计稿 `XueDING_UI_640x172_PNGs/`（9 页 PNG+交互规范 V1.0→V1.1）;盘点后**取消功能导航页**——一级页面平级左右滑动直接切换（GESTURE 触发+MOVE 动画 200ms,线性不循环）,二级页左边缘右滑返回,相册页切页改上下滑;开机图实物定稿不再改。需求 V0.9（§四）/架构 V0.7（§10 页面与导航重构）/交互规范 V1.1 三文档同步修订;新建 `UI设计开发跟踪.md`（页面总表+缺失稿清单+U1~U13 任务序列,U1 横滑框架/U2 中文字体为公共前置）。设计稿缺口：新建闹钟页、沙漏运行态（★★）等,见跟踪文档 §4 |
 
 ---
