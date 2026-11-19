@@ -8,6 +8,7 @@
 #
 # 教训（2026-11-19 真机）:
 #   - 64px 数字字体必须含空格——冒号闪烁用 ' ' 替换 ':',字库无空格会画缺字方框
+#   - **半角 ASCII 不能靠 --symbols 传**（实测 ':' '/' 丢失→缺字方框）,必须 --range 0x20-0x7E 显式全量
 #   - LV_SYMBOL_*(0xFxxx)已合并进 16/24px 中文字体,图标+中文可单 label 混排
 
 set -e
@@ -15,15 +16,15 @@ SYMS=$(cat gb2312_level1.txt)
 FA=$(cat fa_ranges.txt)   # 由 extract_symbols.py 从 lv_symbol_def.h 生成
 FAW=../../managed_components/lvgl__lvgl/scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff
 
-# 16px 中文全字库+图标（辅助文字）
+# 16px 中文全字库+全量 ASCII+图标（辅助文字）
 npx lv_font_conv --font NotoSansSC-Regular.otf --size 16 --bpp 4 \
-  --symbols "$SYMS" --font "$FAW" --range "$FA" \
+  --range 0x20-0x7E --symbols "$SYMS" --font "$FAW" --range "$FA" \
   --format lvgl --lv-font-name noto_sans_sc_16 --no-compress \
   -o ../../components/app_ui/fonts/font_noto_sc_16.c
 
-# 24px 中文全字库+图标（标题/正文）
+# 24px 中文全字库+全量 ASCII+图标（标题/正文）
 npx lv_font_conv --font NotoSansSC-Regular.otf --size 24 --bpp 4 \
-  --symbols "$SYMS" --font "$FAW" --range "$FA" \
+  --range 0x20-0x7E --symbols "$SYMS" --font "$FAW" --range "$FA" \
   --format lvgl --lv-font-name noto_sans_sc_24 --no-compress \
   -o ../../components/app_ui/fonts/font_noto_sc_24.c
 

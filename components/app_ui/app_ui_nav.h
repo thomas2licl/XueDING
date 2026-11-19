@@ -43,6 +43,16 @@ int app_ui_nav_current(void);
 /* 程序切页（语音/场景联动用;方向语义同手势:animate=true 用 MOVE 动画） */
 void app_ui_nav_goto(int idx, bool animate);
 
+/* ---- 二级页面（页面栈,最深一级;需求 §四:两级导航）----
+ * 二级页由功能页创建并持有（常驻,不销毁）;页面自身须提供左上返回按钮调 pop,
+ * nav 层补充"起点在左边缘(≤UI_NAV_EDGE_PX)的右滑=返回"手势。
+ * 起点计算:当前点 - gesture_sum（该值每次按下清零,lv_indev.c indev_proc_release）。 */
+#define UI_NAV_EDGE_PX  40      /* 左边缘手势判定区宽度 */
+
+void app_ui_nav_push(lv_obj_t *scr);   /* 进入二级页（从右滑入,一级页触发 on_hide） */
+bool app_ui_nav_pop(void);             /* 返回一级页（向右滑出,触发 on_show）;无二级页返回 false */
+bool app_ui_nav_is_secondary(void);    /* 当前是否显示二级页 */
+
 /* 占位页工厂（真页面随 U3~U11 逐页替换;中文字体引入后页面名换中文） */
 lv_obj_t *app_ui_nav_placeholder(const char *name, const char *symbol);
 

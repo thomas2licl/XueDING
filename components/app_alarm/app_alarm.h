@@ -18,9 +18,11 @@ extern "C" {
 #define APP_ALARM_RING_S   30      /* 无操作自动停铃秒数（S2.4 UI 接入停止/贪睡） */
 
 typedef enum {
-    LL_ALARM_ONCE = 0,     /* 单次:触发后自动禁用 */
-    LL_ALARM_DAILY = 1,    /* 每日 */
-    /* 预留:LL_ALARM_WEEKLY（weekdays_mask 位掩码,UI 需求明确后启用） */
+    LL_ALARM_ONCE = 0,      /* 单次:触发后自动删除 */
+    LL_ALARM_DAILY = 1,     /* 每日 */
+    LL_ALARM_WORKWEEK = 2,  /* 周一~周五（2026-11-19 U4 需求细化） */
+    LL_ALARM_MON_SAT = 3,   /* 周一~周六 */
+    /* 预留:任意星期组合（weekdays_mask 位掩码,需求明确后扩展） */
 } ll_alarm_repeat_t;
 
 typedef struct {
@@ -37,6 +39,9 @@ int      app_alarm_add(const ll_alarm_t *alarm);
 esp_err_t app_alarm_remove(int id);
 esp_err_t app_alarm_update(int id, const ll_alarm_t *alarm);
 int      app_alarm_get_all(ll_alarm_t *out, int max);
+/* 有效闹钟+槽位 id 一起取出（UI 列表用:get_all 压缩空槽,序号≠槽位,
+ * update/remove 需要真实槽位 id,否则空洞时改错条目） */
+int      app_alarm_get_with_ids(ll_alarm_t *out, int *ids, int max);
 
 /* 响铃状态（UI 查询;触发后 APP_ALARM_RING_S 秒无操作自动停） */
 bool app_alarm_is_ringing(void);

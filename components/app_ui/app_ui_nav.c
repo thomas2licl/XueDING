@@ -25,6 +25,7 @@ static lv_obj_t *s_scr[UI_PAGE_COUNT];
 static lv_obj_t *s_dots[UI_PAGE_COUNT];   /* 页点指示器（top layer） */
 static int s_cur = -1;
 static bool s_anim_busy = false;
+static lv_obj_t *s_sec_scr = NULL;        /* 当前二级页（页面栈一层,最深两级） */
 
 /* ------------------------------------------------------------------ */
 /* 内部：切页                                                           */
@@ -66,14 +67,38 @@ static void nav_load(int idx, lv_screen_load_anim_t anim, uint32_t time)
 /* ------------------------------------------------------------------ */
 /* 手势回调：indev 级事件（LVGL 任务上下文=锁内）                        */
 /* ------------------------------------------------------------------ */
+static int32_t s_press_start_x = -1;     /* 按下起点（边缘返回手势判定用） */
+
+/* lv_indev_t 结构体 LVGL9 已私有化,拿不到 gesture_sum 回推起点——
+ * 改由 indev 级 PRESSED 事件自记按下点（last_point 在事件前已更新） */
+static void press_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    lv_indev_t *indev = bsp_lcd_get_touch_indev();
+    if (indev == NULL) return;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    s_press_start_x = p.x;
+}
+
 static void gesture_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    const lv_indev_t *indev = bsp_lcd_get_touch_indev();
+    lv_indev_t *indev = bsp_lcd_get_touch_indev();
     if (indev == NULL) return;
     if (s_anim_busy) return;
 
-    switch (lv_indev_get_gesture_dir(indev)) {
+    const lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+
+    /* 二级页:仅"起点在左边缘的右滑"=返回;其余方向不消费（页面控件优先） */
+    if (s_sec_scr != NULL) {
+        if (dir == LV_DIR_RIGHT && s_press_start_x >= 0 && s_press_start_x <= UI_NAV_EDGE_PX) {
+            app_ui_nav_pop();
+        }
+        return;
+    }
+
+    switch (dir) {
     case LV_DIR_LEFT:                                   /* 左滑 → 下一页,新屏从右滑入 */
         nav_load(s_cur + 1, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, UI_NAV_ANIM_MS);
         break;
@@ -153,6 +178,7 @@ void app_ui_nav_init(const ui_page_def_t *pages, int count)
     dots_update();
 
     lv_indev_add_event_cb(bsp_lcd_get_touch_indev(), gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_indev_add_event_cb(bsp_lcd_get_touch_indev(), press_cb, LV_EVENT_PRESSED, NULL);
     ESP_LOGI(TAG, "nav ready: %d pages, swipe to switch", s_count);
 }
 
@@ -169,4 +195,40 @@ void app_ui_nav_goto(int idx, bool animate)
     } else {
         nav_load(idx, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, animate ? UI_NAV_ANIM_MS : 0);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* 二级页面栈                                                           */
+/* ------------------------------------------------------------------ */
+static void anim_busy_arm(void)
+{
+    s_anim_busy = true;
+    lv_timer_t *t = lv_timer_create(anim_busy_clear_cb, UI_NAV_ANIM_BUSY_MS, NULL);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+void app_ui_nav_push(lv_obj_t *scr)
+{
+    if (scr == NULL || s_sec_scr != NULL || s_anim_busy) return;
+    if (s_cur >= 0 && s_pages[s_cur].on_hide) s_pages[s_cur].on_hide();
+    anim_busy_arm();
+    lv_screen_load_anim(scr, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, UI_NAV_ANIM_MS, 0, false);
+    s_sec_scr = scr;
+    ESP_LOGI(TAG, "push secondary page");
+}
+
+bool app_ui_nav_pop(void)
+{
+    if (s_sec_scr == NULL || s_anim_busy) return false;
+    anim_busy_arm();
+    lv_screen_load_anim(s_scr[s_cur], LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, UI_NAV_ANIM_MS, 0, false);
+    s_sec_scr = NULL;
+    if (s_pages[s_cur].on_show) s_pages[s_cur].on_show();
+    ESP_LOGI(TAG, "pop back to: %s", s_pages[s_cur].name);
+    return true;
+}
+
+bool app_ui_nav_is_secondary(void)
+{
+    return s_sec_scr != NULL;
 }

@@ -98,6 +98,10 @@ static void alarm_task(void *arg)
         for (int i = 0; i < APP_ALARM_MAX; i++) {
             if (!s_st.list[i].enabled) continue;
             if (s_st.list[i].hour != now->hour || s_st.list[i].minute != now->minute) continue;
+            /* 重复档位过滤（weekday:0=周日,1~6=周一~六） */
+            if (s_st.list[i].repeat_mode == LL_ALARM_WORKWEEK &&
+                (now->weekday == 0 || now->weekday == 6)) continue;
+            if (s_st.list[i].repeat_mode == LL_ALARM_MON_SAT && now->weekday == 0) continue;
             if (s_st.last_fired_tag[i] == tag) continue;   /* 同一天同一分钟只触发一次 */
 
             s_st.last_fired_tag[i] = tag;
@@ -182,6 +186,19 @@ int app_alarm_get_all(ll_alarm_t *out, int max)
     for (int i = 0; i < APP_ALARM_MAX && n < max; i++) {
         if (s_st.list[i].enabled || s_st.list[i].hour || s_st.list[i].minute) {
             out[n++] = s_st.list[i];
+        }
+    }
+    return n;
+}
+
+int app_alarm_get_with_ids(ll_alarm_t *out, int *ids, int max)
+{
+    int n = 0;
+    for (int i = 0; i < APP_ALARM_MAX && n < max; i++) {
+        if (s_st.list[i].enabled || s_st.list[i].hour || s_st.list[i].minute) {
+            out[n] = s_st.list[i];
+            ids[n] = i;
+            n++;
         }
     }
     return n;

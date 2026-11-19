@@ -21,6 +21,7 @@
 #include "app_alarm.h"
 #include "app_ui.h"
 #include "app_ui_nav.h"
+#include "ui_page_alarms.h"
 
 /* ============ 开机图（2026-11-19 素材已接入）============
  * 素材 2048×768 PNG → 640×172 RGB565 小端（转换脚本处理,见 boot_logo.c 注释）,
@@ -250,7 +251,6 @@ static void home_on_show(void)
 /* 一级页面表（UI 跟踪 §1 顺序定稿;占位页随 U3~U11 逐页替换为真页面）      */
 /* ------------------------------------------------------------------ */
 static lv_obj_t *ph_weather(void)  { return app_ui_nav_placeholder("天气",  LV_SYMBOL_GPS); }
-static lv_obj_t *ph_alarms(void)   { return app_ui_nav_placeholder("闹钟",   LV_SYMBOL_BELL); }
 static lv_obj_t *ph_reminders(void){ return app_ui_nav_placeholder("提醒",   LV_SYMBOL_LIST); }
 static lv_obj_t *ph_sound(void)    { return app_ui_nav_placeholder("声音",   LV_SYMBOL_AUDIO); }
 static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("相册",   LV_SYMBOL_IMAGE); }
@@ -261,7 +261,7 @@ static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("设置",   L
 static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
     { .name = "主页",  .create = home_create, .on_show = home_on_show, .on_hide = home_on_hide },
     { .name = "天气",  .create = ph_weather },
-    { .name = "闹钟",  .create = ph_alarms },
+    { .name = "闹钟",  .create = ui_alarms_create, .on_show = ui_alarms_on_show },
     { .name = "提醒",  .create = ph_reminders },
     { .name = "声音",  .create = ph_sound },
     { .name = "相册",  .create = ph_photos },
