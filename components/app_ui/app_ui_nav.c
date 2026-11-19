@@ -8,6 +8,9 @@
 #include "app_ui_nav.h"
 #include "bsp_lcd.h"
 
+/* 中文字体（U2,fonts/ 目录）——占位页页面名显示用 */
+LV_FONT_DECLARE(noto_sans_sc_24);
+
 static const char *TAG = "app_ui_nav";
 
 /* 视觉规范（XueDING 交互规范 V1.1 §三） */
@@ -123,7 +126,7 @@ lv_obj_t *app_ui_nav_placeholder(const char *name, const char *symbol)
     lv_obj_align(icon, LV_ALIGN_CENTER, 0, -16);
 
     lv_obj_t *label = lv_label_create(scr);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(label, &noto_sans_sc_24, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(COL_DIM), 0);
     lv_label_set_text(label, name);
     lv_obj_align(label, LV_ALIGN_CENTER, 0, 36);

@@ -30,6 +30,13 @@ extern const lv_image_dsc_t boot_logo_dsc;
 #define BOOT_LOGO_IMG       (&boot_logo_dsc)
 #define BOOT_LOGO_SHOW_MS   3000
 
+/* ---- 中文字体（U2,fonts/ 目录,lv_font_conv 生成,再生成方法见 tools/fonts/）----
+ * noto_sans_sc_16/24：GB2312 一级 3755 字+UI 符号（覆盖天气描述/语音识别任意中文）
+ * noto_num_64：64px 数字等宽（adv_w 全 568,时间跳动不抖;仅 0-9 : % - +） */
+LV_FONT_DECLARE(noto_sans_sc_16);
+LV_FONT_DECLARE(noto_sans_sc_24);
+LV_FONT_DECLARE(noto_num_64);
+
 static const char *TAG = "app_ui";
 
 /* ---- 主页控件 ---- */
@@ -48,7 +55,7 @@ static uint8_t s_last_sec = 0xFF;
 #define COL_DIM     0x9AA0A6
 #define COL_ACCENT  0x8AB4F8
 
-static const char *const k_weekday[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+static const char *const k_weekday[7] = { "日", "一", "二", "三", "四", "五", "六" };
 
 /* ------------------------------------------------------------------ */
 /* 开机图（须持 LVGL 锁调用）：立绘一帧 → 让锁延时 → 重新持锁返回 */
@@ -90,15 +97,15 @@ static void home_timer_cb(lv_timer_t *t)
         static uint8_t last_min = 0xFF;
         if (now->minute != last_min) {
             last_min = now->minute;
-            lv_label_set_text_fmt(s_date_label, "%04u-%02u-%02u",
-                                  (unsigned)now->year, now->month, now->day);
+            lv_label_set_text_fmt(s_date_label, "%u月%02u日",
+                                  now->month, now->day);
             ll_alarm_t alarms[APP_ALARM_MAX];
             const int n = app_alarm_get_all(alarms, APP_ALARM_MAX);
             int enabled = 0;
             for (int i = 0; i < n; i++) {
                 if (alarms[i].enabled) enabled++;
             }
-            lv_label_set_text_fmt(s_wday_label, "%s  " LV_SYMBOL_BELL " %d",
+            lv_label_set_text_fmt(s_wday_label, "星期%s  " LV_SYMBOL_BELL " %u",
                                   k_weekday[now->weekday % 7], enabled);
         }
     }
@@ -167,28 +174,28 @@ static lv_obj_t *home_create(void)
     lv_obj_set_style_bg_color(screen, lv_color_hex(COL_BG), 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 时间大数字（中偏左,垂直居中）——原生 48px（内置 Montserrat 上限）。
+    /* 时间大数字（中偏左,垂直居中）——64px 自定义等宽数字（U2）。
      * 注意:勿用 transform_scale 放大文本——变换对象走图层渲染路径
      * （每帧 malloc 大缓冲+重绘,LVGL 任务占满 core0 饿死 IDLE 触发看门狗,
-     * 2026-11-18 实测）。72px+ 大字等 §7.6 中文字体阶段以自定义字体文件实现 */
+     * 2026-11-18 实测） */
     s_time_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_time_label, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(s_time_label, &noto_num_64, 0);
     lv_obj_set_style_text_color(s_time_label, lv_color_hex(COL_FG), 0);
     lv_label_set_text(s_time_label, "--:--");
     lv_obj_align(s_time_label, LV_ALIGN_CENTER, -150, 0);
 
-    /* 日期（中） */
+    /* 日期（中,中文 24px） */
     s_date_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_date_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_date_label, &noto_sans_sc_24, 0);
     lv_obj_set_style_text_color(s_date_label, lv_color_hex(COL_DIM), 0);
-    lv_label_set_text(s_date_label, "----");
+    lv_label_set_text(s_date_label, "--月--日");
     lv_obj_align(s_date_label, LV_ALIGN_CENTER, 40, -32);
 
-    /* 星期 + 闹钟数（中,日期下方） */
+    /* 星期 + 闹钟数（中,日期下方,中文 24px） */
     s_wday_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_wday_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_wday_label, &noto_sans_sc_24, 0);
     lv_obj_set_style_text_color(s_wday_label, lv_color_hex(COL_ACCENT), 0);
-    lv_label_set_text(s_wday_label, "---");
+    lv_label_set_text(s_wday_label, "星期-");
     lv_obj_align(s_wday_label, LV_ALIGN_CENTER, 40, 6);
 
     /* 电池（右） */
@@ -242,25 +249,25 @@ static void home_on_show(void)
 /* ------------------------------------------------------------------ */
 /* 一级页面表（UI 跟踪 §1 顺序定稿;占位页随 U3~U11 逐页替换为真页面）      */
 /* ------------------------------------------------------------------ */
-static lv_obj_t *ph_weather(void)  { return app_ui_nav_placeholder("Weather",  LV_SYMBOL_GPS); }
-static lv_obj_t *ph_alarms(void)   { return app_ui_nav_placeholder("Alarms",   LV_SYMBOL_BELL); }
-static lv_obj_t *ph_reminders(void){ return app_ui_nav_placeholder("Reminders",LV_SYMBOL_LIST); }
-static lv_obj_t *ph_sound(void)    { return app_ui_nav_placeholder("Sound",    LV_SYMBOL_AUDIO); }
-static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("Photos",   LV_SYMBOL_IMAGE); }
-static lv_obj_t *ph_hourglass(void){ return app_ui_nav_placeholder("Hourglass",LV_SYMBOL_LOOP); }
-static lv_obj_t *ph_nightlight(void){ return app_ui_nav_placeholder("NightLight", LV_SYMBOL_EYE_OPEN); }
-static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("Settings", LV_SYMBOL_SETTINGS); }
+static lv_obj_t *ph_weather(void)  { return app_ui_nav_placeholder("天气",  LV_SYMBOL_GPS); }
+static lv_obj_t *ph_alarms(void)   { return app_ui_nav_placeholder("闹钟",   LV_SYMBOL_BELL); }
+static lv_obj_t *ph_reminders(void){ return app_ui_nav_placeholder("提醒",   LV_SYMBOL_LIST); }
+static lv_obj_t *ph_sound(void)    { return app_ui_nav_placeholder("声音",   LV_SYMBOL_AUDIO); }
+static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("相册",   LV_SYMBOL_IMAGE); }
+static lv_obj_t *ph_hourglass(void){ return app_ui_nav_placeholder("沙漏",   LV_SYMBOL_LOOP); }
+static lv_obj_t *ph_nightlight(void){ return app_ui_nav_placeholder("夜灯",  LV_SYMBOL_EYE_OPEN); }
+static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("设置",   LV_SYMBOL_SETTINGS); }
 
 static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
-    { .name = "Home",      .create = home_create,     .on_show = home_on_show, .on_hide = home_on_hide },
-    { .name = "Weather",   .create = ph_weather },
-    { .name = "Alarms",    .create = ph_alarms },
-    { .name = "Reminders", .create = ph_reminders },
-    { .name = "Sound",     .create = ph_sound },
-    { .name = "Photos",    .create = ph_photos },
-    { .name = "Hourglass", .create = ph_hourglass },
-    { .name = "NightLight",.create = ph_nightlight },
-    { .name = "Settings",  .create = ph_settings },
+    { .name = "主页",  .create = home_create, .on_show = home_on_show, .on_hide = home_on_hide },
+    { .name = "天气",  .create = ph_weather },
+    { .name = "闹钟",  .create = ph_alarms },
+    { .name = "提醒",  .create = ph_reminders },
+    { .name = "声音",  .create = ph_sound },
+    { .name = "相册",  .create = ph_photos },
+    { .name = "沙漏",  .create = ph_hourglass },
+    { .name = "夜灯",  .create = ph_nightlight },
+    { .name = "设置",  .create = ph_settings },
 };
 
 esp_err_t app_ui_init(void)
