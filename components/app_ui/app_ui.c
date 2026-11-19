@@ -20,14 +20,12 @@
 #include "app_alarm.h"
 #include "app_ui.h"
 
-/* ============ 开机图（S2 素材接入点,当前 0=跳过）============
- * 图片规格：横屏视觉 640×172,RGB565,小端(little-endian) C 数组,
- * 约 214KB。转换工具任选（LVGL 官方 image converter 选 "C array"/RGB565,
- * 或 Image2Lcd 选 16 位真彩 RGB565/小端/C 语言数组）。
- * 接入步骤：素材转成 boot_logo.c（含 lv_image_dsc_t,cf=RGB565,w=640,h=172）,
- * BOOT_LOGO_ENABLE 置 1、BOOT_LOGO_IMG 指向该 dsc,开机显示 3s 后自动进入主界面。 */
-#define BOOT_LOGO_ENABLE    0       /* 素材到位后置 1 */
-#define BOOT_LOGO_IMG       NULL    /* const lv_image_dsc_t * */
+/* ============ 开机图（2026-11-19 素材已接入）============
+ * 素材 2048×768 PNG → 640×172 RGB565 小端（转换脚本处理,见 boot_logo.c 注释）,
+ * 开机显示 3s 后自动进入主界面;BOOT_LOGO_ENABLE 置 0 可跳过（调试/产测） */
+extern const lv_image_dsc_t boot_logo_dsc;
+#define BOOT_LOGO_ENABLE    1
+#define BOOT_LOGO_IMG       (&boot_logo_dsc)
 #define BOOT_LOGO_SHOW_MS   3000
 
 static const char *TAG = "app_ui";
