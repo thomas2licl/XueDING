@@ -259,8 +259,9 @@ static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_da
             const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
             if (now_ms - s_last_tap_ms > 250 && s_tap_log < 30) {
                 s_tap_log++;
-                ESP_LOGI(TAG, "tap raw(%u,%u) phys(%d,%d) rot=%d",
+                ESP_LOGI(TAG, "tap raw(%u,%u) n=%u phys(%d,%d) rot=%d",
                          (unsigned)s_raw_tx, (unsigned)s_raw_ty,
+                         (unsigned)buff[1],
                          (int)s_last_pt.x, (int)s_last_pt.y, (int)s_rotation);
             }
             s_last_tap_ms = now_ms;
@@ -269,8 +270,12 @@ static void bsp_lcd_touch_read_cb(lv_indev_t * indev, lv_indev_data_t * indev_da
     else
     {
         /* 空报文去抖:芯片按住期间大量空报文,立即判抬起会造成按下状态高频
-         * 振荡(事件+重绘风暴);连续 N 次空报文才判真抬起,期间维持按下+坐标 */
+         * 振荡(事件+重绘风暴);连续 N 次空报文才判真抬起,期间维持按下+坐标。
+         * 计数钳位防 uint8 回绕(2026-11-19 真机定位:无触摸静置时每 256 拍
+         * 回绕一次,<3 窗口报出假 PRESSED——固定在最后触点坐标,~3s 一个,
+         * 首个暴露它的功能是页点 3s 空闲隐藏;若假点落在按钮上会误点击) */
         if (++s_empty_cnt >= TOUCH_RELEASE_DEBOUNCE_N) {
+            s_empty_cnt = TOUCH_RELEASE_DEBOUNCE_N;   /* 钳位,等真报文清零 */
             indev_data->state = LV_INDEV_STATE_RELEASED;
         }
         else {
