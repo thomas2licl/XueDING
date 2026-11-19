@@ -79,6 +79,7 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 注意：从 Git Bash 调 PowerShell 跑 idf.py 会因 MSYSTEM 变量被拒（"MSys/Mingw no longer supported"）——**可解（2026-11-19 实测）**：Git Bash 一条龙命令
 `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item Env:MSYSTEM; . 'C:\Espressif\tools\Microsoft.v5.5.4.PowerShell_profile.ps1'; Set-Location <项目目录>; idf.py build"`
 （Bypass 过执行策略 + Remove-Item Env:MSYSTEM 过环境检查;`env -u MSYSTEM` 对该变量无效）。
+另：**烧录偶发 "Could not open COM4, port busy"**（无占用进程,原因未查,2026-11-19 出现 3 次）——直接重试即过,勿排查。
 COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片）——日志+烧录+JTAG 三合一,任意串口终端（PuTTY 等）可直看日志,详见 §6.6 档案。
 
 ---
