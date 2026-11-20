@@ -316,22 +316,26 @@ static void dur_btn_cb(lv_event_t *e)
 }
 
 /* 翻转启动（2026-11-20 交互定稿,替代竖放手势）:横放掉头 90↔270 时
- * app_motion 自动转屏并发 LL_EV_ORIENTATION——物理上=把沙漏倒置,
- * 沙漏页前台且设置态即启动。运行中翻转只转屏不响应。 */
+ * app_motion 自动转屏并发 LL_EV_ORIENTATION——物理上=把沙漏倒置。
+ * 沙漏页前台:设置态翻转=启动;**完成态翻转=重来**（同时长再启,2026-11-20 用户需求）;
+ * 运行/暂停中翻转只转屏不响应。 */
 static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
     const lv_display_rotation_t rot = *(const lv_display_rotation_t *)data;
     if (app_ui_nav_current() != UI_PAGE_IDX_HOURGLASS) return;
-    if (app_timer_get_state() != LL_TIMER_IDLE) return;
+    const ll_timer_state_t st = app_timer_get_state();
+    if (st == LL_TIMER_RUNNING || st == LL_TIMER_PAUSED) return;
 
     if (bsp_lcd_lock(500)) {
+        if (st == LL_TIMER_DONE) app_timer_cancel();   /* 完成:翻转=重来 */
         start_countdown();
         s_last_ui_state = (ll_timer_state_t)-1;
         refresh_ui();
         lv_obj_invalidate(lv_screen_active());   /* 同按钮路径:全屏强刷绕过 270 残留 */
         bsp_lcd_unlock();
-        ESP_LOGI(TAG, "flip(rot=%d) -> start %umin", (int)rot, (unsigned)s_sel_min);
+        ESP_LOGI(TAG, "flip(rot=%d) -> %s %umin", (int)rot,
+                 st == LL_TIMER_DONE ? "restart" : "start", (unsigned)s_sel_min);
     }
 }
 
