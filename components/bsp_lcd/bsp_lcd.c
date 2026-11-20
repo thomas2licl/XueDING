@@ -151,10 +151,10 @@ static void rot_strip_to_block(const uint16_t *src, uint16_t *dst,
 static void bsp_lcd_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p)
 {
     const int block_h = 64;                                   /* 物理块行数（172×64=22KB=单块 DMA） */
-    /* 前缀刷的最深块：脏区必须被覆盖;更深的块内容未变可跳过 */
-    const int last_blk = (s_rotation == LV_DISPLAY_ROTATION_90)
-                         ? (DISP_HOR_RES - 1 - area->x1) / block_h
-                         : area->x2 / block_h;
+    /* 前缀刷:两方向均全量刷到最深块（90 因 canvas 类左侧脏区天然全刷;270 若
+     * 按脏区截断会只刷短前缀,与 0x3C 续写时序存在随机残留,2026-11-20 真机
+     * 定稿:统一全量,多刷块的代价 ~10ms 可接受,换取两方向行为一致） */
+    const int last_blk = (DISP_HOR_RES - 1) / block_h;
     const int blk_cnt = last_blk + 1;
     uint16_t *bufs[2] = { s_trans_buf, s_trans_buf2 };
 
@@ -454,8 +454,6 @@ esp_err_t bsp_lcd_init(void)
 
     uint8_t *buffer_1 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
     assert(buffer_1);
-    uint8_t *buffer_2 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
-    assert(buffer_2);
     s_trans_buf = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
     assert(s_trans_buf);
     s_trans_buf2 = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
@@ -466,8 +464,13 @@ esp_err_t bsp_lcd_init(void)
     bsp_lcd_prefill_black();
     bsp_exio_set_bl_en(true);
 
-    /* DIRECT 双全帧缓冲：渲染直接画全帧，flush 只处理脏区 */
-    lv_display_set_buffers(disp, buffer_1, buffer_2, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
+    /* DIRECT **单**全帧缓冲（2026-11-20 定稿,原双缓冲）：
+     * 双缓冲的 sync_areas 跨缓冲同步在特定脏区组合下漏拷（lv_area_diff 边界）,
+     * 另一块缓冲残留陈旧像素,被全量前缀刷发上屏=沙漏启动随机闪旧沙型
+     * （90/270 均可复现,逐帧 flush 日志定位）。单缓冲 LVGL 跳过整个 sync 机制,
+     * 渲染永远在同一块=永新鲜;本驱动 flush 同步等 DMA 完成,无渲染/传输并发。
+     * 附赠:省 214KB PSRAM。 */
+    lv_display_set_buffers(disp, buffer_1, NULL, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_user_data(disp, s_panel);
     lv_display_set_rotation(disp, s_rotation);
 

@@ -71,7 +71,7 @@ static void motion_task(void *arg)
         lv_display_rotation_t target;
         const bool is_landscape = accel_to_orientation(ax, ay, az, &target);
 
-        /* 低频日志:横放时给出轴读数与判定,供 S1.5 轴映射标定 */
+        /* 低频日志:给出轴读数与判定,供标定/排查 */
         if ((++n % MOTION_LOG_DIV) == 0) {
             ESP_LOGI(TAG, "a=[%.2f %.2f %.2f] %s",
                      (double)ax, (double)ay, (double)az,

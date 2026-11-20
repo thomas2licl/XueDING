@@ -98,29 +98,41 @@ static void touch_cb(lv_event_t *e)
     if (!s_sec_scr) dots_show();          /* 二级页期间不出页点,返回一级再亮 */
 }
 
+/* 手势冷却:触摸芯片拖动报点间隔(200~400ms)超过去抖窗口(30ms),一次长滑会被
+ * 拆成多次按下→多次手势→连切多页(2026-11-20 真机);冷却期内忽略新手势=一滑一页 */
+#define UI_NAV_GESTURE_COOLDOWN_MS  350
+
 static void gesture_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     lv_indev_t *indev = bsp_lcd_get_touch_indev();
     if (indev == NULL) return;
     if (s_anim_busy) return;
+    static uint32_t last_gesture_ms = 0;
+    if (lv_tick_elaps(last_gesture_ms) < UI_NAV_GESTURE_COOLDOWN_MS) return;
 
     const lv_dir_t dir = lv_indev_get_gesture_dir(indev);
 
     /* 二级页:仅"起点在左边缘的右滑"=返回;其余方向不消费（页面控件优先） */
     if (s_sec_scr != NULL) {
         if (dir == LV_DIR_RIGHT && s_press_start_x >= 0 && s_press_start_x <= UI_NAV_EDGE_PX) {
-            app_ui_nav_pop();
+            if (app_ui_nav_pop()) last_gesture_ms = lv_tick_get();
         }
         return;
     }
 
     switch (dir) {
     case LV_DIR_LEFT:                                   /* 左滑 → 下一页,新屏从右滑入 */
-        nav_load(s_cur + 1, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, UI_NAV_ANIM_MS);
+        if (s_cur + 1 < s_count) {
+            nav_load(s_cur + 1, LV_SCREEN_LOAD_ANIM_MOVE_LEFT, UI_NAV_ANIM_MS);
+            last_gesture_ms = lv_tick_get();
+        }
         break;
     case LV_DIR_RIGHT:                                  /* 右滑 → 上一页,新屏从左滑入 */
-        nav_load(s_cur - 1, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, UI_NAV_ANIM_MS);
+        if (s_cur > 0) {
+            nav_load(s_cur - 1, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, UI_NAV_ANIM_MS);
+            last_gesture_ms = lv_tick_get();
+        }
         break;
     default:                                            /* 上下滑暂不响应（相册页特例 U11 接） */
         break;

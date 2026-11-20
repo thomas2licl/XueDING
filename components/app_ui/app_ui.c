@@ -22,6 +22,7 @@
 #include "app_ui.h"
 #include "app_ui_nav.h"
 #include "ui_page_alarms.h"
+#include "ui_page_hourglass.h"
 
 /* ============ 开机图（2026-11-19 素材已接入）============
  * 素材 2048×768 PNG → 640×172 RGB565 小端（转换脚本处理,见 boot_logo.c 注释）,
@@ -254,7 +255,6 @@ static lv_obj_t *ph_weather(void)  { return app_ui_nav_placeholder("天气",  LV
 static lv_obj_t *ph_reminders(void){ return app_ui_nav_placeholder("提醒",   LV_SYMBOL_LIST); }
 static lv_obj_t *ph_sound(void)    { return app_ui_nav_placeholder("声音",   LV_SYMBOL_AUDIO); }
 static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("相册",   LV_SYMBOL_IMAGE); }
-static lv_obj_t *ph_hourglass(void){ return app_ui_nav_placeholder("沙漏",   LV_SYMBOL_LOOP); }
 static lv_obj_t *ph_nightlight(void){ return app_ui_nav_placeholder("夜灯",  LV_SYMBOL_EYE_OPEN); }
 static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("设置",   LV_SYMBOL_SETTINGS); }
 
@@ -265,7 +265,7 @@ static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
     { .name = "提醒",  .create = ph_reminders },
     { .name = "声音",  .create = ph_sound },
     { .name = "相册",  .create = ph_photos },
-    { .name = "沙漏",  .create = ph_hourglass },
+    { .name = "沙漏",  .create = ui_hourglass_create, .on_show = ui_hourglass_on_show, .on_hide = ui_hourglass_on_hide },
     { .name = "夜灯",  .create = ph_nightlight },
     { .name = "设置",  .create = ph_settings },
 };
