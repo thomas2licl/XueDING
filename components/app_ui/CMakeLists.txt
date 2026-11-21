@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "app_ui.c" "app_ui_nav.c" "ui_page_alarms.c" "ui_page_hourglass.c" "boot_logo.c"
+    SRCS "app_ui.c" "app_ui_nav.c" "ui_home_cards.c" "ui_page_alarms.c" "ui_page_hourglass.c" "boot_logo.c"
          "fonts/font_noto_sc_16.c" "fonts/font_noto_sc_24.c" "fonts/font_noto_num_64.c"
     INCLUDE_DIRS "."
     REQUIRES bsp_lcd app_event app_power app_clock app_alarm app_timer lvgl)

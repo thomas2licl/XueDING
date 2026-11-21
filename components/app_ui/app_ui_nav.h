@@ -56,6 +56,11 @@ bool app_ui_nav_is_secondary(void);    /* 当前是否显示二级页 */
 /* 占位页工厂（真页面随 U3~U11 逐页替换;中文字体引入后页面名换中文） */
 lv_obj_t *app_ui_nav_placeholder(const char *name, const char *symbol);
 
+/* ---- 竖向手势转发（U3b 主页三槽卡片）----
+ * 上下方向手势默认忽略;页面可注册本回调接管（如主页卡片上下滑切换）。
+ * 应在 on_show 注册、on_hide 注销;start_x=按下起点 x（槽位判定用）。 */
+void app_ui_nav_set_vertical_cb(void (*cb)(lv_dir_t dir, int32_t start_x));
+
 #ifdef __cplusplus
 }
 #endif

@@ -21,6 +21,7 @@
 #include "app_alarm.h"
 #include "app_ui.h"
 #include "app_ui_nav.h"
+#include "ui_home_cards.h"
 #include "ui_page_alarms.h"
 #include "ui_page_hourglass.h"
 
@@ -58,6 +59,50 @@ static uint8_t s_last_sec = 0xFF;
 #define COL_ACCENT  0x8AB4F8
 
 static const char *const k_weekday[7] = { "日", "一", "二", "三", "四", "五", "六" };
+
+/* ------------------------------------------------------------------ */
+/* 主页 v2（U3,2026-11-21）:三槽卡片系统（ui_home_cards）
+ *   三等分槽,每槽独立上下滑循环切换摘要卡片(淡入 150ms),左右滑切页不受影响
+ *   卡片=插件(create/refresh),样式待用户设计——当前 4 张为临时样式:
+ *   时钟2(时间/日期/闹钟+状态行:电池/WiFi/蓝牙)、天气(占位)、倒计时、提醒(占位)
+ * v1 原样保留为夜间模式样式（U12 切换,PROJECT_MEMORY 关键约束） */
+static void home_banner_attach(lv_obj_t *parent);   /* 前向(定义在 v1 区) */
+static void home_banner_poll(void);                 /* 前向 */
+
+static lv_timer_t *v2_home_timer;
+
+static void v2_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    home_cards_tick();      /* 各槽当前卡数据刷新 */
+    home_banner_poll();     /* 响铃横幅显隐（与 v1 共用逻辑） */
+}
+
+static lv_obj_t *home_v2_create(void)
+{
+    lv_obj_t *screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x080A0E), 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    home_cards_build(screen);          /* 三槽+初始卡片 */
+    home_banner_attach(screen);        /* 响铃横幅 */
+
+    v2_home_timer = lv_timer_create(v2_timer_cb, 1000, NULL);
+    lv_timer_pause(v2_home_timer);
+    return screen;
+}
+
+static void home_v2_on_hide(void)
+{
+    if (v2_home_timer) lv_timer_pause(v2_home_timer);
+    app_ui_nav_set_vertical_cb(NULL);  /* 注销竖向手势 */
+}
+
+static void home_v2_on_show(void)
+{
+    if (v2_home_timer) lv_timer_resume(v2_home_timer);
+    app_ui_nav_set_vertical_cb(home_cards_on_gesture);   /* 主页接管上下滑 */
+}
 
 /* ------------------------------------------------------------------ */
 /* 开机图（须持 LVGL 锁调用）：立绘一帧 → 让锁延时 → 重新持锁返回 */
@@ -113,6 +158,12 @@ static void home_timer_cb(lv_timer_t *t)
     }
 
     /* 响铃横幅随状态显隐（30s 无操作 app_alarm 自停后横幅收起） */
+    home_banner_poll();
+}
+
+/* 横幅显隐检查（v1/v2 timer 共用） */
+static void home_banner_poll(void)
+{
     const bool ringing = app_alarm_is_ringing();
     const bool shown = !lv_obj_has_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
     if (ringing != shown) {
@@ -130,7 +181,9 @@ static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (st == NULL) return;
     if (!bsp_lcd_lock(200)) return;
 
-    /* 电量分档图标（LVGL 内置 symbol,含于 montserrat 字体） */
+    home_cards_set_battery(st);        /* v2:推送快照,时钟卡状态行 1s 内刷 */
+    if (s_batt_label == NULL) { bsp_lcd_unlock(); return; }   /* v1 未创建(夜间未启用) */
+
     const char *icon = LV_SYMBOL_BATTERY_FULL;
     if (st->percent < 20)      icon = LV_SYMBOL_BATTERY_1;
     else if (st->percent < 50) icon = LV_SYMBOL_BATTERY_2;
@@ -138,11 +191,8 @@ static void on_battery(void *arg, esp_event_base_t base, int32_t id, void *data)
     lv_label_set_text_fmt(s_batt_label, "%s%s %u%%",
                           st->charging ? LV_SYMBOL_CHARGE : "",
                           icon, (unsigned)st->percent);
-    if (st->vbat_mv <= 3300) {
-        lv_obj_set_style_text_color(s_batt_label, lv_color_hex(0xF28B82), 0);   /* 低电红 */
-    } else {
-        lv_obj_set_style_text_color(s_batt_label, lv_color_hex(COL_FG), 0);
-    }
+    lv_obj_set_style_text_color(s_batt_label,
+        lv_color_hex(st->vbat_mv <= 3300 ? 0xF06464 : COL_FG), 0);
     bsp_lcd_unlock();
 }
 
@@ -168,7 +218,7 @@ static void alarm_stop_btn_cb(lv_event_t *e)
 }
 
 /* ------------------------------------------------------------------ */
-/* 主页构建（独立 screen,U1 起由 app_ui_nav 持有）                        */
+/* 主页 v1 构建（独立 screen;夜间模式基准样式,U12 接入切换——勿删勿改布局） */
 /* ------------------------------------------------------------------ */
 static lv_obj_t *home_create(void)
 {
@@ -207,8 +257,19 @@ static lv_obj_t *home_create(void)
     lv_label_set_text(s_batt_label, LV_SYMBOL_BATTERY_FULL " --%");
     lv_obj_align(s_batt_label, LV_ALIGN_RIGHT_MID, -30, 0);
 
-    /* 响铃横幅（顶部,默认隐藏） */
-    s_alarm_banner = lv_obj_create(screen);
+    /* 响铃横幅（v1/v2 共用构建,attach 更新 s_alarm_banner 指针） */
+    home_banner_attach(screen);
+
+    /* 1s 刷新（时间/秒闪烁/响铃横幅） */
+    s_home_timer = lv_timer_create(home_timer_cb, 1000, NULL);
+    return screen;
+}
+
+/* 响铃横幅构建（v1/v2 各挂一份到自己的 screen;s_alarm_banner 指向最后
+ * attach 的页面——当前活动页创建于后,即指向活动页的横幅） */
+static void home_banner_attach(lv_obj_t *parent)
+{
+    s_alarm_banner = lv_obj_create(parent);
     lv_obj_set_size(s_alarm_banner, 640, 40);
     lv_obj_align(s_alarm_banner, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(s_alarm_banner, lv_color_hex(0xB3261E), 0);
@@ -217,24 +278,21 @@ static lv_obj_t *home_create(void)
     lv_obj_clear_flag(s_alarm_banner, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *banner_text = lv_label_create(s_alarm_banner);
-    lv_obj_set_style_text_font(banner_text, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(banner_text, &noto_sans_sc_24, 0);
     lv_obj_set_style_text_color(banner_text, lv_color_white(), 0);
-    lv_label_set_text(banner_text, LV_SYMBOL_BELL " Alarm");
+    lv_label_set_text(banner_text, LV_SYMBOL_BELL " 闹钟响了");
     lv_obj_align(banner_text, LV_ALIGN_LEFT_MID, 16, 0);
 
     lv_obj_t *btn_stop = lv_button_create(s_alarm_banner);
-    lv_obj_set_size(btn_stop, 90, 30);
+    lv_obj_set_size(btn_stop, 100, 30);
     lv_obj_align(btn_stop, LV_ALIGN_RIGHT_MID, -8, 0);
     lv_obj_add_event_cb(btn_stop, alarm_stop_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *btn_lab = lv_label_create(btn_stop);
-    lv_label_set_text(btn_lab, "STOP");
+    lv_obj_set_style_text_font(btn_lab, &noto_sans_sc_24, 0);
+    lv_label_set_text(btn_lab, "停止");
     lv_obj_center(btn_lab);
 
     lv_obj_add_flag(s_alarm_banner, LV_OBJ_FLAG_HIDDEN);
-
-    /* 1s 刷新（时间/秒闪烁/响铃横幅） */
-    s_home_timer = lv_timer_create(home_timer_cb, 1000, NULL);
-    return screen;
 }
 
 /* 导航生命周期：离开主页挂起刷新,回主页恢复（LVGL 任务上下文,免锁） */
@@ -258,8 +316,23 @@ static lv_obj_t *ph_photos(void)   { return app_ui_nav_placeholder("相册",   L
 static lv_obj_t *ph_nightlight(void){ return app_ui_nav_placeholder("夜灯",  LV_SYMBOL_EYE_OPEN); }
 static lv_obj_t *ph_settings(void) { return app_ui_nav_placeholder("设置",   LV_SYMBOL_SETTINGS); }
 
+/* 主页样式三件套表（U12 夜间模式整套切换;当前挂日间 v2,v1 保持编译引用不删） */
+#define HOME_STYLE_DAY     0
+#define HOME_STYLE_NIGHT   1   /* v1 深色版（S2.4） */
+typedef struct {
+    lv_obj_t *(*create)(void);
+    void (*on_show)(void);
+    void (*on_hide)(void);
+} home_style_t;
+static const home_style_t k_home_styles[] = {
+    [HOME_STYLE_DAY]   = { home_v2_create, home_v2_on_show, home_v2_on_hide },
+    [HOME_STYLE_NIGHT] = { home_create, home_on_show, home_on_hide },
+};
+
 static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
-    { .name = "主页",  .create = home_create, .on_show = home_on_show, .on_hide = home_on_hide },
+    { .name = "主页",  .create = k_home_styles[HOME_STYLE_DAY].create,
+      .on_show = k_home_styles[HOME_STYLE_DAY].on_show,
+      .on_hide = k_home_styles[HOME_STYLE_DAY].on_hide },
     { .name = "天气",  .create = ph_weather },
     { .name = "闹钟",  .create = ui_alarms_create, .on_show = ui_alarms_on_show },
     { .name = "提醒",  .create = ph_reminders },
@@ -279,6 +352,6 @@ esp_err_t app_ui_init(void)
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
     app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
 
-    ESP_LOGI(TAG, "UI ready: home v1 + swipe nav (%d pages)", UI_PAGE_COUNT);
+    ESP_LOGI(TAG, "UI ready: home v2(3-col) + swipe nav (%d pages)", UI_PAGE_COUNT);
     return ESP_OK;
 }

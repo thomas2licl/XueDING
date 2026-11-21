@@ -26,6 +26,7 @@ static lv_obj_t *s_dots[UI_PAGE_COUNT];   /* 页点（top layer 容器内） */
 static int s_cur = -1;
 static bool s_anim_busy = false;
 static lv_obj_t *s_sec_scr = NULL;        /* 当前二级页（页面栈一层,最深两级） */
+static void (*s_vertical_cb)(lv_dir_t, int32_t) = NULL;   /* 竖向手势接管(主页卡片) */
 
 /* 页点自动隐藏（2026-11-19 用户建议,符合"安静"设计理念）:
  * 触摸淡入,3s 无操作淡出;二级页期间隐藏,程序切页点亮 3s。 */
@@ -134,9 +135,15 @@ static void gesture_cb(lv_event_t *e)
             last_gesture_ms = lv_tick_get();
         }
         break;
-    default:                                            /* 上下滑暂不响应（相册页特例 U11 接） */
+    default:                                            /* 上下滑:转发给页面注册的回调 */
+        if (s_vertical_cb) s_vertical_cb(dir, s_press_start_x);
         break;
     }
+}
+
+void app_ui_nav_set_vertical_cb(void (*cb)(lv_dir_t dir, int32_t start_x))
+{
+    s_vertical_cb = cb;
 }
 
 /* ------------------------------------------------------------------ */
