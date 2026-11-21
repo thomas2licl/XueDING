@@ -29,7 +29,8 @@ static void on_time_synced(void *arg, esp_event_base_t base, int32_t id, void *d
     app_clock_sync_time(dt);
 }
 
-/* 开机 RTC 无效时用编译时刻校时（置 0 关闭——仅用于观察无效状态） */
+/* 开机 RTC 无效时用编译时刻校时——已退役(2026-11-21 SNTP 上线,保留代码做
+ * 无网络降级兜底:RTC 断电且 WiFi 不在时仍有近似时间,比 --:-- 好) */
 #define CLOCK_SET_COMPILE_TIME 1
 
 static bsp_rtc_datetime_t s_now;            /* 当前时间缓存（本任务单写） */
