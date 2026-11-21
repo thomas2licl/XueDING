@@ -87,6 +87,8 @@
 13. **label transform_scale 走图层渲染**：每帧 malloc 大缓冲,LVGL 占满 core0 饿死 IDLE0 看门狗——放大文字用自定义字体文件
 14. **GESTURE 判定与低频报点兼容**：累计位移>50px 触发,单点大位移反而易命中——但报点间隔>去抖窗口时一滑拆多手势,手势层加冷却
 15. **主题 transition（80ms）**：按钮状态渐变本身无害——按键闪先查 buffer 层（sync 漏拷曾伪装成 transition 问题）
+16. **单缓冲 DIRECT 下 screen 动画的 invalidate 唤不醒渲染**（2026-11-21 破案,半下午）：触摸切页 0 帧动画,但无触摸的程序切页正常、与其他动画(页点淡入)并发时正常——**screen anim 自身的 invalidate 无法唤醒 refr,普通 anim 的可以**。修复=动画期间 33ms"渲染心跳"(立即首拍+周期 invalidate 两屏+自停);**心跳只可踢 1~2 屏**——首版踢 3 屏全屏把 LVGL 任务打爆、触摸饿死。定位手段：①程序化复现(定时自动切页,剥离触摸变量) ②LVGL 动画生命周期打点(scr_load_anim/anim_completed 的 printf) ③用户观察是重要线索但需日志校准(时间窗口错位曾致两轮空采集)
+17. **lv_timer_t 也是私有结构**（user_data 不可直接访问）——计数用文件级变量;同族:lv_event_t/lv_indev_t(教训 6)
 
 ---
 

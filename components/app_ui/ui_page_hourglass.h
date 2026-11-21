@@ -12,8 +12,8 @@ lv_obj_t *ui_hourglass_create(void);
 void ui_hourglass_on_show(void);
 void ui_hourglass_on_hide(void);
 
-/* 本页在 nav 页表中的下标（app_ui.c k_pages 顺序定稿:主页0..设置8） */
-#define UI_PAGE_IDX_HOURGLASS   6
+/* 本页在 nav 页表中的下标（临时=3 与闹钟相邻验动画,定稿回 6;app_ui.c k_pages 同步） */
+#define UI_PAGE_IDX_HOURGLASS   3
 
 #ifdef __cplusplus
 }

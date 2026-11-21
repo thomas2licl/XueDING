@@ -335,10 +335,10 @@ static const ui_page_def_t k_pages[UI_PAGE_COUNT] = {
       .on_hide = k_home_styles[HOME_STYLE_DAY].on_hide },
     { .name = "天气",  .create = ph_weather },
     { .name = "闹钟",  .create = ui_alarms_create, .on_show = ui_alarms_on_show },
-    { .name = "提醒",  .create = ph_reminders },
+    { .name = "沙漏",  .create = ui_hourglass_create, .on_show = ui_hourglass_on_show, .on_hide = ui_hourglass_on_hide },   /* 临时测试:与闹钟相邻验动画,定稿后回位（跟踪 §1 顺序） */
     { .name = "声音",  .create = ph_sound },
     { .name = "相册",  .create = ph_photos },
-    { .name = "沙漏",  .create = ui_hourglass_create, .on_show = ui_hourglass_on_show, .on_hide = ui_hourglass_on_hide },
+    { .name = "提醒",  .create = ph_reminders },
     { .name = "夜灯",  .create = ph_nightlight },
     { .name = "设置",  .create = ph_settings },
 };

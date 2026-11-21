@@ -24,7 +24,7 @@ extern "C" {
  *  - 调用方须已持 LVGL 锁（init/gesture 回调均在 LVGL 任务上下文）。 */
 
 #define UI_PAGE_COUNT       9       /* 页面顺序定稿见 UI 跟踪 §1,占位页随功能逐页替换 */
-#define UI_NAV_ANIM_MS      200     /* 切页动画时长（交互规范 §6.1:180~220ms） */
+#define UI_NAV_ANIM_MS      280     /* 切页动画时长（200 匀速偏快无过程感,280+ease-out 真机定,2026-11-21） */
 #define UI_NAV_ANIM_BUSY_MS (UI_NAV_ANIM_MS + 50)  /* 动画窗口内忽略新手势 */
 
 typedef struct {

@@ -21,26 +21,36 @@ static const char *TAG = "home_cards";
 /* ================================================================== */
 /* 卡片一：时钟卡 2（日期星期/64px 时间/下一条闹钟 + 状态行:电池/WiFi/蓝牙） */
 /* ================================================================== */
-static lv_obj_t *c_time, *c_date, *c_alarm, *c_status;
+static lv_obj_t *c_time, *c_date, *c_status;
 static ll_battery_state_t s_batt_snap;        /* 电池快照（on_battery 事件推送） */
+
+/* 时钟卡 2 布局（2026-11-21 用户设计,二轮调整）:日期星期(顶)/时间(垂直居中)/
+ * 状态行(底)三块上下均匀分布。状态行=flex 行,顺序:电池 → WiFi(未连接右下
+ * 红叹号) → 蓝牙(未连接隐藏) → 闹钟(行尾,无闹钟隐藏)。
+ * 连接状态钩子: home_cards_set_net(wifi_ok, bt_ok)——U8 WiFi/S3 蓝牙接入时调用 */
+static lv_obj_t *c_time, *c_date;
+static lv_obj_t *c_row, *c_batt, *c_wifi, *c_wifi_excl, *c_bt, *c_alarm;
+static ll_battery_state_t s_batt_snap;        /* 电池快照（on_battery 事件推送） */
+static bool s_wifi_ok = false, s_bt_ok = false;
+static uint8_t c_last_sec = 0xFF, c_last_min = 0xFF;   /* 去重(create 复位,防切卡后占位文本滞留) */
 
 static void card_clock_refresh(void)
 {
     const bsp_rtc_datetime_t *now = app_clock_get_time();
     if (now == NULL) { lv_label_set_text(c_time, "--:--"); return; }
 
-    static uint8_t last_sec = 0xFF, last_min = 0xFF;
-    if (now->second != last_sec) {
-        last_sec = now->second;
+    if (now->second != c_last_sec) {
+        c_last_sec = now->second;
         lv_label_set_text_fmt(c_time, "%02u%c%02u",
                               now->hour, (now->second & 1) ? ':' : ' ', now->minute);
 
-        if (now->minute != last_min) {
-            last_min = now->minute;
+        if (now->minute != c_last_min) {
+            c_last_min = now->minute;
             static const char *const wd[7] = { "日", "一", "二", "三", "四", "五", "六" };
             lv_label_set_text_fmt(c_date, "%u月%02u日 星期%s",
                                   now->month, now->day, wd[now->weekday % 7]);
 
+            /* 下一条闹钟(行尾;无启用闹钟整段隐藏) */
             ll_alarm_t alarms[APP_ALARM_MAX];
             int ids[APP_ALARM_MAX];
             const int n = app_alarm_get_with_ids(alarms, ids, APP_ALARM_MAX);
@@ -56,49 +66,94 @@ static void card_clock_refresh(void)
             if (best >= 0) {
                 lv_label_set_text_fmt(c_alarm, LV_SYMBOL_BELL " %02u:%02u",
                                       alarms[best].hour, alarms[best].minute);
+                lv_obj_clear_flag(c_alarm, LV_OBJ_FLAG_HIDDEN);
             } else {
-                lv_label_set_text(c_alarm, "无闹钟");
+                lv_obj_add_flag(c_alarm, LV_OBJ_FLAG_HIDDEN);
             }
         }
     }
 
-    /* 状态行:电池(快照) + WiFi(未接入恒离线) + 蓝牙(未接入恒离线) */
+    /* 电池段 */
     const char *bicon = LV_SYMBOL_BATTERY_FULL;
     if (s_batt_snap.percent < 20)      bicon = LV_SYMBOL_BATTERY_1;
     else if (s_batt_snap.percent < 50) bicon = LV_SYMBOL_BATTERY_2;
     else if (s_batt_snap.percent < 90) bicon = LV_SYMBOL_BATTERY_3;
-    lv_label_set_text_fmt(c_status, "%s%s%u%%  " LV_SYMBOL_WIFI "  " LV_SYMBOL_BLUETOOTH,
+    lv_label_set_text_fmt(c_batt, "%s%s%u%%",
                           s_batt_snap.charging ? LV_SYMBOL_CHARGE : "",
                           bicon, (unsigned)s_batt_snap.percent);
-    lv_obj_set_style_text_color(c_status,
+    lv_obj_set_style_text_color(c_batt,
         lv_color_hex(s_batt_snap.vbat_mv <= 3300 ? UI_COL_RED : UI_COL_WEAK), 0);
 }
 
 static lv_obj_t *card_clock_create(lv_obj_t *parent)
 {
+    /* 卡片重建=去重状态复位:slot_load 会紧跟 refresh,若沿用旧 last_min,
+     * 切卡回来时分钟未跳变 → 日期/闹钟保持占位文本最长 1 分钟(真机踩坑) */
+    c_last_sec = 0xFF;
+    c_last_min = 0xFF;
+
+    /* 三块垂直均匀分布:顶(日期) / 中(时间) / 底(状态行) */
     c_date = lv_label_create(parent);
     lv_obj_set_style_text_font(c_date, UI_FONT_TITLE, 0);
     lv_obj_set_style_text_color(c_date, lv_color_hex(UI_COL_DIM), 0);
     lv_label_set_text(c_date, "--月--日");
-    lv_obj_align(c_date, LV_ALIGN_TOP_LEFT, 4, 6);
+    lv_obj_align(c_date, LV_ALIGN_TOP_LEFT, 4, 12);
 
     c_time = lv_label_create(parent);
     lv_obj_set_style_text_font(c_time, &noto_num_64, 0);
     lv_obj_set_style_text_color(c_time, lv_color_hex(UI_COL_FG), 0);
     lv_label_set_text(c_time, "--:--");
-    lv_obj_align(c_time, LV_ALIGN_TOP_LEFT, 4, 40);
+    lv_obj_align(c_time, LV_ALIGN_LEFT_MID, 4, 0);
 
-    c_alarm = lv_label_create(parent);
+    /* 状态行:flex 行容器,子项自动横排 */
+    c_row = lv_obj_create(parent);
+    lv_obj_set_size(c_row, SLOT_W - 8, 22);
+    lv_obj_align(c_row, LV_ALIGN_BOTTOM_LEFT, 4, -8);
+    lv_obj_set_style_bg_opa(c_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(c_row, 0, 0);
+    lv_obj_set_style_pad_all(c_row, 0, 0);
+    lv_obj_set_style_pad_column(c_row, 14, 0);
+    lv_obj_set_flex_flow(c_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(c_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_START);
+    lv_obj_clear_flag(c_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    c_batt = lv_label_create(c_row);
+    lv_obj_set_style_text_font(c_batt, UI_FONT_TEXT, 0);
+    lv_obj_set_style_text_color(c_batt, lv_color_hex(UI_COL_WEAK), 0);
+    lv_label_set_text(c_batt, "--%");
+
+    /* WiFi:图标 + 右下红叹号(未连接叠加;连接后隐藏叹号) */
+    lv_obj_t *wifi_box = lv_obj_create(c_row);
+    lv_obj_set_size(wifi_box, 30, 22);
+    lv_obj_set_style_bg_opa(wifi_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(wifi_box, 0, 0);
+    lv_obj_set_style_pad_all(wifi_box, 0, 0);
+    lv_obj_clear_flag(wifi_box, LV_OBJ_FLAG_SCROLLABLE);
+    c_wifi = lv_label_create(wifi_box);
+    lv_obj_set_style_text_font(c_wifi, UI_FONT_TEXT, 0);
+    lv_obj_set_style_text_color(c_wifi, lv_color_hex(UI_COL_WEAK), 0);
+    lv_label_set_text(c_wifi, LV_SYMBOL_WIFI);
+    lv_obj_align(c_wifi, LV_ALIGN_LEFT_MID, 0, 0);
+    c_wifi_excl = lv_label_create(wifi_box);
+    lv_obj_set_style_text_font(c_wifi_excl, UI_FONT_TEXT, 0);
+    lv_obj_set_style_text_color(c_wifi_excl, lv_color_hex(UI_COL_ORANGE), 0);
+    lv_label_set_text(c_wifi_excl, "!");
+    lv_obj_align_to(c_wifi_excl, c_wifi, LV_ALIGN_OUT_RIGHT_BOTTOM, -2, 3);
+
+    /* 蓝牙:未连接整体隐藏 */
+    c_bt = lv_label_create(c_row);
+    lv_obj_set_style_text_font(c_bt, UI_FONT_TEXT, 0);
+    lv_obj_set_style_text_color(c_bt, lv_color_hex(UI_COL_WEAK), 0);
+    lv_label_set_text(c_bt, LV_SYMBOL_BLUETOOTH);
+
+    /* 闹钟:行尾 */
+    c_alarm = lv_label_create(c_row);
     lv_obj_set_style_text_font(c_alarm, UI_FONT_TEXT, 0);
     lv_obj_set_style_text_color(c_alarm, lv_color_hex(UI_COL_WEAK), 0);
-    lv_label_set_text(c_alarm, "无闹钟");
-    lv_obj_align(c_alarm, LV_ALIGN_TOP_LEFT, 4, 122);
+    lv_label_set_text(c_alarm, "-");
 
-    c_status = lv_label_create(parent);
-    lv_obj_set_style_text_font(c_status, UI_FONT_TEXT, 0);
-    lv_obj_set_style_text_color(c_status, lv_color_hex(UI_COL_WEAK), 0);
-    lv_label_set_text(c_status, "--%");
-    lv_obj_align(c_status, LV_ALIGN_TOP_LEFT, 4, 146);
+    /* 初始按连接状态(钩子默认全未连接)应用显隐 */
+    lv_obj_add_flag(c_bt, LV_OBJ_FLAG_HIDDEN);
     return NULL;
 }
 
@@ -213,7 +268,8 @@ static const home_card_t k_cards[] = {
 
 /* ---- 槽 ---- */
 typedef struct {
-    lv_obj_t *cont;      /* 槽容器(卡片父,卡片切换=重建内容) */
+    lv_obj_t *cont;      /* 槽容器(固定,卡片层挂其内) */
+    lv_obj_t *card;      /* 当前卡层(整体可滑动,切换=滑出删旧+滑入建新) */
     int idx;             /* 当前卡索引 */
 } slot_t;
 static slot_t s_slots[3];
@@ -222,9 +278,14 @@ static slot_t s_slots[3];
 /* 初始排列:槽0=时钟,槽1=天气,槽2=倒计时(提醒从任一槽滑出) */
 static const int k_slot_init[SLOT_CNT] = { 0, 1, 2 };
 
-static void card_fade_in_cb(void *obj, int32_t v)
+static void card_slide_cb(void *obj, int32_t y)
 {
-    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, 0);
+    lv_obj_set_y((lv_obj_t *)obj, y);
+}
+
+static void card_slide_del_cb(lv_anim_t *a)
+{
+    lv_obj_delete((lv_obj_t *)a->var);
 }
 
 /* 卡片控件为单例（static 句柄）——同一卡不得同时在两槽显示:
@@ -237,22 +298,54 @@ static bool card_in_use(int idx, const slot_t *except)
     return false;
 }
 
-/* 装载卡 idx 进槽 s（重建内容+淡入+立即刷一次数据） */
-static void slot_load(slot_t *s, int idx)
+/* 装载卡 idx 进槽 s,dir=触发滑动方向(TOP=新卡从下滑入/BOTTOM=从上滑入;
+ * LV_DIR_NONE=初次构建,无动画)。旧卡反向滑出后自动销毁。 */
+static void slot_load(slot_t *s, int idx, lv_dir_t dir)
 {
     s->idx = idx;
-    lv_obj_clean(s->cont);                       /* 旧卡控件全清 */
-    lv_obj_set_style_opa(s->cont, LV_OPA_TRANSP, 0);
-    k_cards[idx].create(s->cont);
+
+    /* 旧卡层:反向滑出 + 动画完成销毁（无动画直接删） */
+    if (s->card) {
+        lv_obj_t *old = s->card;
+        if (dir == LV_DIR_NONE) {
+            lv_obj_delete(old);
+        } else {
+            const int32_t out_y = (dir == LV_DIR_TOP) ? -158 : 158;
+            lv_anim_t a;
+            lv_anim_init(&a);
+            lv_anim_set_var(&a, old);
+            lv_anim_set_exec_cb(&a, card_slide_cb);
+            lv_anim_set_values(&a, 0, out_y);
+            lv_anim_set_duration(&a, 160);
+            lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+            lv_anim_set_completed_cb(&a, card_slide_del_cb);
+            lv_anim_start(&a);
+        }
+    }
+
+    /* 新卡层:整槽尺寸透明容器,起始偏移滑入归位 */
+    s->card = lv_obj_create(s->cont);
+    lv_obj_set_size(s->card, SLOT_W, 158);
+    lv_obj_set_pos(s->card, 0, 0);
+    lv_obj_set_style_bg_opa(s->card, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s->card, 0, 0);
+    lv_obj_set_style_pad_all(s->card, 0, 0);
+    lv_obj_clear_flag(s->card, LV_OBJ_FLAG_SCROLLABLE);
+    k_cards[idx].create(s->card);
     k_cards[idx].refresh();
 
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s->cont);
-    lv_anim_set_exec_cb(&a, card_fade_in_cb);
-    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
-    lv_anim_set_duration(&a, 150);
-    lv_anim_start(&a);
+    if (dir != LV_DIR_NONE) {
+        const int32_t in_y = (dir == LV_DIR_TOP) ? 158 : -158;
+        lv_obj_set_y(s->card, in_y);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s->card);
+        lv_anim_set_exec_cb(&a, card_slide_cb);
+        lv_anim_set_values(&a, in_y, 0);
+        lv_anim_set_duration(&a, 160);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
 }
 
 /* ================================================================== */
@@ -268,8 +361,21 @@ void home_cards_build(lv_obj_t *screen)
         lv_obj_set_style_border_width(s_slots[i].cont, 0, 0);
         lv_obj_set_style_pad_all(s_slots[i].cont, 0, 0);
         lv_obj_clear_flag(s_slots[i].cont, LV_OBJ_FLAG_SCROLLABLE);
-        slot_load(&s_slots[i], k_slot_init[i]);
+        slot_load(&s_slots[i], k_slot_init[i], LV_DIR_NONE);
     }
+
+    /* 三等分淡分隔线 ×2（槽缝中间,上下不到屏幕边缘——沿用三栏版样式） */
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *line = lv_obj_create(screen);
+        lv_obj_set_size(line, 1, 144);
+        lv_obj_set_pos(line, SLOT_X(i + 1) - 3, 14);   /* 缝中线:下槽起点-6/2 */
+        lv_obj_set_style_bg_color(line, lv_color_hex(0x1B2330), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(line, 0, 0);
+        lv_obj_set_style_pad_all(line, 0, 0);
+        lv_obj_clear_flag(line, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    }
+
     ESP_LOGI(TAG, "3 slots x %u cards ready", (unsigned)CARD_CNT);
 }
 
@@ -282,12 +388,12 @@ void home_cards_on_gesture(lv_dir_t dir, int32_t start_x)
     if (slot_i < 0 || slot_i >= SLOT_CNT) return;
     slot_t *s = &s_slots[slot_i];
 
-    /* 上滑(TOP)=下一张,下滑(BOTTOM)=上一张,循环;跳过其他槽正在显示的卡 */
+    /* 上滑(TOP)=下一张(新卡从下滑入),下滑(BOTTOM)=上一张;跳过占用卡 */
     const int step = (dir == LV_DIR_TOP) ? 1 : -1;
     for (int k = 1; k <= (int)CARD_CNT; k++) {
         const int cand = (s->idx + step * k + (int)CARD_CNT * 4) % (int)CARD_CNT;
         if (!card_in_use(cand, s)) {
-            slot_load(s, cand);
+            slot_load(s, cand, dir);
             break;
         }
     }
@@ -304,4 +410,13 @@ void home_cards_tick(void)
 void home_cards_set_battery(const ll_battery_state_t *st)
 {
     if (st) s_batt_snap = *st;
+}
+
+void home_cards_set_net(bool wifi_ok, bool bt_ok)
+{
+    s_wifi_ok = wifi_ok;
+    s_bt_ok = bt_ok;
+    if (c_wifi == NULL) return;              /* 时钟卡未创建(不在任何槽) */
+    (wifi_ok ? lv_obj_add_flag : lv_obj_clear_flag)(c_wifi_excl, LV_OBJ_FLAG_HIDDEN);
+    (bt_ok ? lv_obj_clear_flag : lv_obj_add_flag)(c_bt, LV_OBJ_FLAG_HIDDEN);
 }

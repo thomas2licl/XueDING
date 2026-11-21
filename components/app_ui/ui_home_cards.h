@@ -35,6 +35,10 @@ void home_cards_tick(void);
 /* 电池快照推送（app_ui 的 on_battery 事件回调转发;更新时钟卡状态行） */
 void home_cards_set_battery(const ll_battery_state_t *st);
 
+/* 网络状态钩子（U8 WiFi/S3 蓝牙接入后调用;须持 LVGL 锁）
+ * wifi_ok=false: WiFi 图标右下橙色小叹号;bt_ok=false: 蓝牙图标整体隐藏 */
+void home_cards_set_net(bool wifi_ok, bool bt_ok);
+
 #ifdef __cplusplus
 }
 #endif

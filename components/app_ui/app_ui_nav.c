@@ -56,6 +56,32 @@ static void dots_update(void)
     }
 }
 
+/* 动画渲染心跳（2026-11-21 破案:单缓冲 DIRECT 下 screen 动画的 invalidate
+ * 唤不醒渲染定时器,但其他动画(页点淡入)的 invalidate 可以——"等3秒后滑有
+ * 动画"正是页点淡入顺带渲染了切页;自动切页实验证实无触摸干扰时动画正常。
+ * 解法:动画期间 33ms 一拍 invalidate 激活屏(等价一个"伴生动画"持续唤醒渲染),
+ * 只 1 屏、负载与正常动画相同——勿学首版 invalidate 3 屏会把 LVGL 任务打爆) */
+static lv_timer_t *s_anim_kick = NULL;
+static uint8_t s_kick_cnt = 0;
+
+static void anim_kick_once(lv_obj_t *scr)
+{
+    /* MOVE 动画两屏都在动:目标屏 + 当前激活屏(动画初期可能尚未切换),都踢 */
+    lv_obj_invalidate(scr);
+    lv_obj_t *act = lv_display_get_screen_active(lv_display_get_default());
+    if (scr != act) lv_obj_invalidate(act);
+}
+
+static void anim_kick_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    anim_kick_once(s_scr[s_cur]);
+    if (++s_kick_cnt >= UI_NAV_ANIM_MS / 33 + 2) {
+        lv_timer_delete(t);
+        s_anim_kick = NULL;
+    }
+}
+
 static void nav_load(int idx, lv_screen_load_anim_t anim, uint32_t time)
 {
     if (idx < 0 || idx >= s_count || idx == s_cur) return;   /* 线性到头即停,不回弹 */
@@ -68,6 +94,12 @@ static void nav_load(int idx, lv_screen_load_anim_t anim, uint32_t time)
         s_anim_busy = true;
         lv_timer_t *t = lv_timer_create(anim_busy_clear_cb, UI_NAV_ANIM_BUSY_MS, NULL);
         lv_timer_set_repeat_count(t, 1);
+
+        s_kick_cnt = 0;                      /* 渲染心跳起搏:立即首拍+周期拍 */
+        if (s_anim_kick) lv_timer_delete(s_anim_kick);
+        anim_kick_once(s_scr[idx]);          /* 首拍不等 33ms,抢在动画首帧前唤醒渲染 */
+        s_anim_kick = lv_timer_create(anim_kick_cb, 33, NULL);
+        lv_timer_set_repeat_count(s_anim_kick, -1);   /* cb 内自数自停 */
     }
 
     s_cur = idx;
@@ -274,6 +306,7 @@ void app_ui_nav_init(const ui_page_def_t *pages, int count)
     lv_indev_add_event_cb(bsp_lcd_get_touch_indev(), gesture_cb, LV_EVENT_GESTURE, NULL);
     lv_indev_add_event_cb(bsp_lcd_get_touch_indev(), touch_cb, LV_EVENT_PRESSED, NULL);
     lv_indev_add_event_cb(bsp_lcd_get_touch_indev(), touch_cb, LV_EVENT_RELEASED, NULL);
+
     ESP_LOGI(TAG, "nav ready: %d pages, swipe to switch", s_count);
 }
 

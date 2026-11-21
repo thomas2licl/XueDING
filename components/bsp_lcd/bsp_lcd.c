@@ -464,12 +464,8 @@ esp_err_t bsp_lcd_init(void)
     bsp_lcd_prefill_black();
     bsp_exio_set_bl_en(true);
 
-    /* DIRECT **单**全帧缓冲（2026-11-20 定稿,原双缓冲）：
-     * 双缓冲的 sync_areas 跨缓冲同步在特定脏区组合下漏拷（lv_area_diff 边界）,
-     * 另一块缓冲残留陈旧像素,被全量前缀刷发上屏=沙漏启动随机闪旧沙型
-     * （90/270 均可复现,逐帧 flush 日志定位）。单缓冲 LVGL 跳过整个 sync 机制,
-     * 渲染永远在同一块=永新鲜;本驱动 flush 同步等 DMA 完成,无渲染/传输并发。
-     * 附赠:省 214KB PSRAM。 */
+    /* DIRECT **单**全帧缓冲（2026-11-20 定稿;2026-11-21 曾试回双缓冲修切页动画,
+     * 用户测试后回退——动画问题与页点显示状态相关,见 nav 验证日志） */
     lv_display_set_buffers(disp, buffer_1, NULL, BUFF_SIZE, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_user_data(disp, s_panel);
     lv_display_set_rotation(disp, s_rotation);
@@ -481,6 +477,9 @@ esp_err_t bsp_lcd_init(void)
     lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(touch_indev, bsp_lcd_touch_read_cb);
     lv_timer_set_period(lv_indev_get_read_timer(touch_indev), 10);
+    /* 手势位移阈值 50→30：低频报点下短划总位移常不足 50,触发费劲
+     * （2026-11-21 真机反馈）;冷却+动画窗口仍防连触 */
+    lv_indev_set_gesture_min_distance(touch_indev, 30);
     s_touch_indev = touch_indev;
 
     /* LVGL tick */
