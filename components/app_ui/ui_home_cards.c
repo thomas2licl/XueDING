@@ -213,24 +213,25 @@ static void card_timer_refresh(void)
     default:
         lv_label_set_text(c_hg_state, "倒计时未启动");
         lv_obj_set_style_text_color(c_hg_state, lv_color_hex(UI_COL_WEAK), 0);
-        lv_label_set_text(c_hg_time, "--:--");
+        lv_label_set_text(c_hg_time, "00:00");   /* 用户定稿:未启动显示 00:00 */
         break;
     }
 }
 
 static lv_obj_t *card_timer_create(lv_obj_t *parent)
 {
+    /* 2026-11-21 用户定稿：小字(状态行)贴顶,时间数字 LEFT_MID 居中——与时钟卡对齐 */
     c_hg_state = lv_label_create(parent);
     lv_obj_set_style_text_font(c_hg_state, UI_FONT_TEXT, 0);
     lv_obj_set_style_text_color(c_hg_state, lv_color_hex(UI_COL_WEAK), 0);
     lv_label_set_text(c_hg_state, "倒计时未启动");
-    lv_obj_align(c_hg_state, LV_ALIGN_TOP_LEFT, 4, 34);
+    lv_obj_align(c_hg_state, LV_ALIGN_TOP_LEFT, 4, 6);
 
     c_hg_time = lv_label_create(parent);
     lv_obj_set_style_text_font(c_hg_time, &noto_num_64, 0);
     lv_obj_set_style_text_color(c_hg_time, lv_color_hex(UI_COL_FG), 0);
-    lv_label_set_text(c_hg_time, "--:--");
-    lv_obj_align(c_hg_time, LV_ALIGN_TOP_LEFT, 4, 62);
+    lv_label_set_text(c_hg_time, "00:00");
+    lv_obj_align(c_hg_time, LV_ALIGN_LEFT_MID, 4, 0);   /* 与时钟卡时间同位 */
     return NULL;
 }
 
