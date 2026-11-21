@@ -89,6 +89,13 @@
 
 > **结论：512KB 中 ~390KB 在写第一行代码前就被占死**——真正可自由分配的只有 116KB 动态堆,这也是 WiFi 27KB 打得艰难的根本原因。后续大块数据一律 PSRAM（余 7.7MB）。
 
+**SNTP 对时链路（2026-11-21 全通）**：
+- 触发链：每 1h（`CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000`）lwIP SNTP 向 ntp.aliyun.com 发 UDP → NTP 应答 → lwIP 设系统时钟 → `sntp_sync_cb` 回调 → 发 `LL_EV_TIME_SYNCED` 事件（载荷 bsp_rtc_datetime_t）→ app_clock 订阅 → `app_clock_sync_time()` 写 PCF85063 + 更新缓存
+- **每次 NTP 应答都写一次 RTC**（校正 RTC 漂移 ±20ppm/天 ~2s;PCF85063 每小时写一次无压力）
+- NTP 失败不写（断网跳过,下周期再试）;WiFi 断线重连后不立即查（等下个周期）
+- **时间三层降级链**：开机读 RTC → 有效直接用（断电走时 ✓）;无效（首次上电/电池耗尽）→ 尝试 SNTP → WiFi 不在则**编译时刻兜底**（`CLOCK_SET_COMPILE_TIME=1`,精度=烧录到开机间隔,已标注退役留降级）
+- U8 正式阶段应对时间隔改 12h（需求 §9 功耗策略,配合 WiFi 动态开关）
+
 **WiFi sdkconfig 裁剪定稿**（sdkconfig.defaults 已固化）：
 ```
 SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y    # lwIP 可迁移部分进 PSRAM
