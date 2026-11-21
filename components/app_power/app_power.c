@@ -54,22 +54,24 @@ static uint8_t vbat_to_percent(uint16_t mv, bool charging)
     return 5;   /* <3.45V:濒临关机（3.30V 由 power_task 强制关机保护） */
 }
 
-static void power_task(void *arg)
+/* 1s tick（slow_tick 调度;原 5s 轮询在内部 5 分频,首测标志保留） */
+void app_power_tick(void)
 {
-    bool first = true;
-    bool usb_online = false;
-    uint16_t last_mv = 0;
-    int cand = 0;                 /* 沿候选:+1 上沿 / -1 下沿 / 0 无 */
-    uint16_t cand_mv = 0;
-    ll_battery_state_t st = {0};
+    /* 状态跨 tick 保持（原任务局部变量）;5s 分频+首测即测 */
+    static int div = 0;
+    static bool first = true;
+    static bool usb_online = false;
+    static uint16_t last_mv = 0;
+    static int cand = 0;          /* 沿候选:+1 上沿 / -1 下沿 / 0 无 */
+    static uint16_t cand_mv = 0;
 
-    for (;;) {
-        /* 开机后 1s 首测（低电电池开机即保护）,此后 5s 周期 */
-        vTaskDelay(pdMS_TO_TICKS(first ? POWER_BOOT_DELAY_MS : POWER_POLL_PERIOD_MS));
-        first = false;
+    if (!first && (++div % 5) != 0) return;   /* 5s 分频 */
+    div = 0;
 
+    {
         uint16_t mv = 0;
-        if (bsp_power_read_vbat_mv(&mv) != ESP_OK) continue;
+        ll_battery_state_t st = {0};
+        if (bsp_power_read_vbat_mv(&mv) != ESP_OK) return;
 
         if (last_mv == 0) {
             /* 首测：定 USB 在线初值（≥4100 大概率外电,含满电插着充电器） */
@@ -164,11 +166,10 @@ esp_err_t app_power_init(void)
         return ESP_OK;
     }
 
-    if (xTaskCreate(power_task, "pwr_mon", 3 * 1024, NULL, 2, NULL) != pdPASS ||
-        xTaskCreate(key_task, "pwr_key", 2 * 1024, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "create task failed");
-        return ESP_FAIL;
+    if (xTaskCreate(key_task, "pwr_key", 2 * 1024, NULL, 2, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "create key task failed, shutdown-key degraded");
+        /* 不阻塞:电压监测走 slow_tick,仅长按关机降级 */
     }
-    ESP_LOGI(TAG, "power service running (poll %dms)", POWER_POLL_PERIOD_MS);
+    ESP_LOGI(TAG, "power service ready (slow_tick %dms + key task)", POWER_POLL_PERIOD_MS);
     return ESP_OK;
 }

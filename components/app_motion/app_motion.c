@@ -114,8 +114,9 @@ esp_err_t app_motion_init(void)
     }
 
     if (xTaskCreate(motion_task, "motion", 3 * 1024, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "create task failed");
-        return ESP_FAIL;
+        /* WiFi 启动后内部 RAM 紧张,建任务可能失败——降级(丢方向自适应)而非 abort */
+        ESP_LOGE(TAG, "create task failed, motion degraded (no auto-rotate)");
+        return ESP_OK;
     }
     ESP_LOGI(TAG, "motion service running (poll %dms, auto-rotate %s)",
              MOTION_POLL_PERIOD_MS, MOTION_AUTO_ROTATE ? "on" : "off");

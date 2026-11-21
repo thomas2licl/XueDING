@@ -15,10 +15,13 @@
 #define Touch_SCL_NUM (GPIO_NUM_18)
 #define Touch_SDA_NUM (GPIO_NUM_17)
 
-/* 显示：面板原生 172(H) x 640(V) 竖条 */
+/* 显示：面板原生 172(H) x 640(V) 竖条
+ * tile 旋转块高:中转缓冲已移 PSRAM(2026-11-21),大小不再挤内部 RAM——
+ * 恢复 64 行(单块 22KB,块数少效率高) */
+#define LCD_TILE_BLOCK_H               64
 #define EXAMPLE_LCD_H_RES              172
 #define EXAMPLE_LCD_V_RES              640
-#define LVGL_DMA_BUFF_LEN    (EXAMPLE_LCD_H_RES * 64 * 2)
+#define LVGL_DMA_BUFF_LEN    (EXAMPLE_LCD_H_RES * LCD_TILE_BLOCK_H * 2)
 #define LVGL_SPIRAM_BUFF_LEN (EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * 2)
 
 /* 软件旋转开关（S1.2 起横屏为默认形态，此宏保留兼容厂商逻辑） */
@@ -61,5 +64,10 @@
 #define DISP_TOUCH_ADDR                   0x3B
 #define EXAMPLE_PIN_NUM_TOUCH_RST         (-1)
 #define EXAMPLE_PIN_NUM_TOUCH_INT         (-1)
+
+/* WiFi STA（2026-11-21 临时对时用:连上即 SNTP 对时;正式配网归 U8/设置页） */
+#define WIFI_TMP_SSID                     "iphone11"
+#define WIFI_TMP_PASS                     "12345678"
+#define WIFI_TMP_NTP_SRV                  "ntp.aliyun.com"
 
 #endif

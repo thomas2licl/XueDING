@@ -56,6 +56,38 @@
 | 22 | 11-20 | 文档"变更记录"与"状态区"两类更新不同步（积压 5 天） | 收官三步：追加记录+状态区回扫+关键词 grep | 进度 §7 |
 | 23 | 11-20 | "已记录"未落文件 | 说了≠记了,先写文件再声明 | 进度 §7 |
 
+### WiFi / 内存挤压（2026-11-21 全天,9 轮战役终通）
+
+| # | 日期 | 坑 | 一句话教训 | 详情 |
+|---|---|---|---|---|
+| 24 | 11-21 | esp_event_loop_create_default 重复调用→abort | app_event 已建 default loop,组件内不可再调（重复创建即 abort） | 代码注释 |
+| 25 | 11-21 | esp_wifi_init 返回 0x101(NO_MEM) | esf 静态 TX 池是**大头（16 个×1.6KB=25.6KB）**,砍 STATIC_TX_BUFFER_NUM 16→6 是最有效一刀 | 本节下文 |
+| 26 | 11-21 | LVGL+WiFi 同跑内部 RAM 不够 | 三个方向齐下：DMA 中转缓冲→PSRAM / 删空任务+四任务合并 slow_tick / WiFi 全链裁剪（TX/RX/mgmt/lwIP/保留池） | 本节下文 |
+| 27 | 11-21 | WiFi 后启动→motion/timer 任务建栈失败 abort | **先启 WiFi（大块连续 esf 须堆完整时拿走）,后建任务**;所有 xTaskCreate 加降级兜底（降级≠abort） | main.c |
+| 28 | 11-21 | net_init 任务 2KB 栈溢出→stack overflow 复位 | esp_wifi_init 调用深,任务栈至少 4KB | app_net.c |
+| 29 | 11-21 | motion 栈砍 2KB 后溢出 | 3KB 是底线（IMU 读+浮点+LVGL 锁切旋转）,不动 | app_motion.c |
+| 30 | 11-21 | sdkconfig sed 改了但数字不变 | sdkconfig 需 **reconfigure** 才进 sdkconfig.h,直接改 sdkconfig 后 `idf.py reconfigure` | 流程 |
+
+**WiFi 内存全景（真机实测）**：
+- WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
+- net_init 任务栈 4KB 是临时的,vTaskDelete 自删即回收
+- **内部 RAM 总账**：116KB 可用 = LVGL 任务栈~6K + DMA 保留池 16K + 各任务栈~15K + WiFi 驱动 27.4K + 剩余 ~11.4K
+- iPhone 热点须开"最大兼容性"（=2.4GHz,ESP32 不支持 5GHz）
+- 对完时可 `esp_wifi_stop()+deinit()` 回收 27.4KB,需要时重新 init（~2s 重连）——符合需求 §9 联网降频
+
+**WiFi sdkconfig 裁剪定稿**（sdkconfig.defaults 已固化）：
+```
+SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y    # lwIP 可迁移部分进 PSRAM
+SPIRAM_MALLOC_RESERVE_INTERNAL=16384  # 保留池 32K→16K
+ESP_WIFI_STATIC_TX_BUFFER_NUM=6    # 16→6 (esf 池大头,省 16KB)
+ESP_WIFI_STATIC_RX_BUFFER_NUM=2    # 4→2
+ESP_WIFI_RX_MGMT_BUF_NUM_DEF=2     # 5→2
+LWIP_MAX_SOCKETS=4                  # 10→4
+LWIP_TCPIP_TASK_STACK_SIZE=2048     # 3072→2048
+# AMPDU TX/RX 关闭（吞吐无关紧要,对时场景）
+# WPA3 关闭
+```
+
 ---
 
 ## 1a. 关键约束（勿违反,违反即返工）

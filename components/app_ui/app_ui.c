@@ -202,6 +202,18 @@ static void on_orientation(void *arg, esp_event_base_t base, int32_t id, void *d
     ESP_LOGI(TAG, "event bus OK: ORIENTATION -> %d", *(int *)data);
 }
 
+/* WiFi 连接状态（app_net 发）→ 时钟卡状态行图标（持锁调卡片钩子） */
+static void on_net_state(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
+    const bool connected = *(const bool *)data;
+    if (bsp_lcd_lock(200)) {
+        home_cards_set_net(connected, false);
+        bsp_lcd_unlock();
+    }
+    ESP_LOGI(TAG, "net state -> %s", connected ? "connected" : "disconnected");
+}
+
 static void on_alarm_fired(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
@@ -351,6 +363,7 @@ esp_err_t app_ui_init(void)
     app_event_subscribe(LL_EV_BATTERY_STATE, on_battery, NULL);
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
     app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
+    app_event_subscribe(LL_EV_NET_STATE, on_net_state, NULL);
 
     ESP_LOGI(TAG, "UI ready: home v2(3-col) + swipe nav (%d pages)", UI_PAGE_COUNT);
     return ESP_OK;

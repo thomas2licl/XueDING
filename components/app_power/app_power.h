@@ -22,6 +22,7 @@ typedef struct {
 } ll_battery_state_t;
 
 esp_err_t app_power_init(void);
+void app_power_tick(void);       /* 1s tick（slow_tick 调度;内部 5s 分频） */
 
 #ifdef __cplusplus
 }

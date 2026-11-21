@@ -33,6 +33,7 @@ typedef struct {
 } ll_alarm_t;
 
 esp_err_t app_alarm_init(void);
+void app_alarm_tick(void);        /* 1s tick（slow_tick 调度） */
 
 /* 增删改查（id = 数组下标;-1 无空闲;改 enabled 也走 update 落 NVS） */
 int      app_alarm_add(const ll_alarm_t *alarm);

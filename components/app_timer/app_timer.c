@@ -26,20 +26,17 @@ static void set_state(ll_timer_state_t st)
              (unsigned)s_remain_s, (unsigned)s_total_s);
 }
 
-static void timer_task(void *arg)
+/* 1s tick（slow_tick 调度,2026-11-21 任务合并） */
+void app_timer_tick(void)
 {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    if (s_state != LL_TIMER_RUNNING) return;
+    if (s_remain_s > 0) s_remain_s--;
 
-        if (s_state != LL_TIMER_RUNNING) continue;
-        if (s_remain_s > 0) s_remain_s--;
-
-        if (s_remain_s == 0) {
-            set_state(LL_TIMER_DONE);
-            const int32_t payload = (int32_t)s_total_s;
-            app_event_post(LL_EV_TIMER_FIRED, &payload, sizeof(payload), 0);
-            ESP_LOGW(TAG, "TIMEOUT! %us elapsed", (unsigned)s_total_s);
-        }
+    if (s_remain_s == 0) {
+        set_state(LL_TIMER_DONE);
+        const int32_t payload = (int32_t)s_total_s;
+        app_event_post(LL_EV_TIMER_FIRED, &payload, sizeof(payload), 0);
+        ESP_LOGW(TAG, "TIMEOUT! %us elapsed", (unsigned)s_total_s);
     }
 }
 
@@ -48,11 +45,7 @@ esp_err_t app_timer_init(void)
     s_state = LL_TIMER_IDLE;
     s_remain_s = 0;
 
-    if (xTaskCreate(timer_task, "hourglass", 3 * 1024, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "create task failed");
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "hourglass engine running");
+    ESP_LOGI(TAG, "hourglass engine ready (slow_tick)");
     return ESP_OK;
 }
 

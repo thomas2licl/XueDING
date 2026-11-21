@@ -1,1 +1,1 @@
-idf_component_register(SRCS "app_net.c" INCLUDE_DIRS "." REQUIRES app_event)
+idf_component_register(SRCS "app_net.c" INCLUDE_DIRS "." REQUIRES app_event esp_wifi esp_netif bsp_rtc bsp_common)

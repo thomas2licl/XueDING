@@ -80,18 +80,17 @@ static void fire(int id)
     }
 }
 
-static void alarm_task(void *arg)
+/* 1s tick（slow_tick 调度） */
+void app_alarm_tick(void)
 {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
+    {
         /* 响铃倒计时（无操作自动停） */
         if (s_st.ringing && --s_st.ring_countdown_s == 0) {
             app_alarm_stop();
         }
 
         const bsp_rtc_datetime_t *now = app_clock_get_time();
-        if (now == NULL) continue;
+        if (now == NULL) return;   /* 时间未就绪（原任务循环 continue → tick 直接返回） */
 
         const uint16_t tag = (uint16_t)(now->weekday * 1440u + now->hour * 60u + now->minute);
 
@@ -140,11 +139,7 @@ esp_err_t app_alarm_init(void)
         if (s_st.list[i].enabled) n++;
     }
 
-    if (xTaskCreate(alarm_task, "alarm", 3 * 1024, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "create task failed");
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "alarm engine running (%d enabled)", n);
+    ESP_LOGI(TAG, "alarm engine ready (%d enabled, slow_tick)", n);
     return ESP_OK;
 }
 

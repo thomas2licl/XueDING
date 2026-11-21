@@ -17,6 +17,7 @@ extern "C" {
 /* 初始化：RTC 驱动 +（必要时）编译时刻校时 + 1s 走时任务。
  * RTC 硬件失败不阻塞整机（时间功能降级） */
 esp_err_t app_clock_init(void);
+void app_clock_tick(void);       /* 1s tick（slow_tick 调度,2026-11-21 任务合并） */
 
 /* 取当前时间缓存（1s 刷新;直接读单写多读缓存,S2.4 UI 使用） */
 const bsp_rtc_datetime_t *app_clock_get_time(void);

@@ -11,11 +11,23 @@
 #include "esp_log.h"
 
 #include "app_clock.h"
+#include "app_event.h"
 
 static const char *TAG = "app_clock";
 
 #define CLOCK_POLL_PERIOD_MS   1000    /* 读 RTC 周期 */
 #define CLOCK_LOG_DIV          10      /* 每 N 秒一条走时日志 */
+
+/* SNTP 对时事件（app_net 发,esp_event 上下文）——直接写 RTC:
+ * bus0 驱动级互斥,与 IMU 轮询安全共享 */
+static void on_time_synced(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id;
+    const bsp_rtc_datetime_t *dt = (const bsp_rtc_datetime_t *)data;
+    if (dt == NULL) return;
+    ESP_LOGI(TAG, "SNTP time received, syncing RTC...");
+    app_clock_sync_time(dt);
+}
 
 /* 开机 RTC 无效时用编译时刻校时（置 0 关闭——仅用于观察无效状态） */
 #define CLOCK_SET_COMPILE_TIME 1
@@ -51,11 +63,11 @@ static bool parse_build_time(bsp_rtc_datetime_t *dt)
     return true;
 }
 
-static void clock_task(void *arg)
+/* 1s tick（由 main 的 slow_tick 调度,2026-11-21 任务合并省栈） */
+void app_clock_tick(void)
 {
-    int n = 0;
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(CLOCK_POLL_PERIOD_MS));
+    {
+        static int n = 0;
         if (bsp_rtc_get_time(&s_now) == ESP_OK) {
             s_time_ready = true;
         }
@@ -108,10 +120,8 @@ esp_err_t app_clock_init(void)
 #endif
     }
 
-    if (xTaskCreate(clock_task, "clock", 3 * 1024, NULL, 2, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "create task failed");
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "clock service running");
+    app_event_subscribe(LL_EV_TIME_SYNCED, on_time_synced, NULL);
+
+    ESP_LOGI(TAG, "clock service ready (slow_tick)");
     return ESP_OK;
 }

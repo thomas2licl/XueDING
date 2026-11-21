@@ -150,7 +150,7 @@ static void rot_strip_to_block(const uint16_t *src, uint16_t *dst,
  * 实测从全帧 PSRAM 旋转的 ~148ms/帧 优化到 ~15ms/帧（全屏 10 块）。 */
 static void bsp_lcd_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p)
 {
-    const int block_h = 64;                                   /* 物理块行数（172×64=22KB=单块 DMA） */
+    const int block_h = LCD_TILE_BLOCK_H;                     /* 物理块行数（2026-11-21 起随 user_config,32 行=11KB 为 WiFi 让内存） */
     /* 前缀刷:两方向均全量刷到最深块（90 因 canvas 类左侧脏区天然全刷;270 若
      * 按脏区截断会只刷短前缀,与 0x3C 续写时序存在随机残留,2026-11-20 真机
      * 定稿:统一全量,多刷块的代价 ~10ms 可接受,换取两方向行为一致） */
@@ -335,25 +335,8 @@ static void bsp_lcd_port_task(void *arg)
     }
 }
 
-/* 背光循环测试任务（厂商调试功能，Backlight_Testing=0 时空转保留） */
-static void bsp_lcd_backlight_loop_task(void *arg)
-{
-    for (;;)
-    {
-#if (Backlight_Testing == true)
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        setUpduty(LCD_PWM_MODE_255);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        setUpduty(LCD_PWM_MODE_175);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        setUpduty(LCD_PWM_MODE_125);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        setUpduty(LCD_PWM_MODE_0);
-#else
-        vTaskDelay(pdMS_TO_TICKS(2000));
-#endif
-    }
-}
+/* 背光循环测试任务已删除（2026-11-21:Backlight_Testing=0 时空转浪费 4KB 栈,
+ * 用户建议任务合并省内存;原代码 git 可追溯） */
 
 /* ------------------------------------------------------------------ */
 /* 对外接口                                                             */
@@ -454,9 +437,12 @@ esp_err_t bsp_lcd_init(void)
 
     uint8_t *buffer_1 = (uint8_t *)heap_caps_malloc(BUFF_SIZE, MALLOC_CAP_SPIRAM);
     assert(buffer_1);
-    s_trans_buf = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
+    /* tile 旋转中转缓冲 ×2 移 PSRAM（2026-11-21,用户建议:WiFi esf 池需大块连续
+     * 内部 RAM——S3 GDMA 支持 PSRAM 源,4 字节对齐即可;QSPI 40MHz 带宽足够,
+     * 代价是传输略慢。曾长期 MALLOC_CAP_DMA 内部分配(44KB→11KB 三轮裁剪) */
+    s_trans_buf = (uint16_t *)heap_caps_aligned_alloc(16, LVGL_DMA_BUFF_LEN, MALLOC_CAP_SPIRAM);
     assert(s_trans_buf);
-    s_trans_buf2 = (uint16_t *)heap_caps_malloc(LVGL_DMA_BUFF_LEN, MALLOC_CAP_DMA);
+    s_trans_buf2 = (uint16_t *)heap_caps_aligned_alloc(16, LVGL_DMA_BUFF_LEN, MALLOC_CAP_SPIRAM);
     assert(s_trans_buf2);
 
     /* 启动时序：先清屏为纯黑再点亮背光（防止背光亮起瞬间显示面板
@@ -494,7 +480,6 @@ esp_err_t bsp_lcd_init(void)
     assert(s_lvgl_mux);
 
     xTaskCreatePinnedToCore(bsp_lcd_port_task, "LVGL", LVGL_TASK_STACK_SIZE, NULL, LVGL_TASK_PRIORITY, NULL, LVGL_TASK_CORE);
-    xTaskCreatePinnedToCore(bsp_lcd_backlight_loop_task, "bl_loop", 4 * 1024, NULL, 2, NULL, LVGL_TASK_CORE);
 
     ESP_LOGI(TAG, "bsp_lcd init done");
     return ESP_OK;

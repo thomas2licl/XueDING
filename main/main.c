@@ -30,6 +30,21 @@
 
 static const char *TAG = "main";
 
+/* ---- slow_tick 调度任务（2026-11-21 任务合并:clock/alarm/hourglass/power 四个
+ * 1s/5s 轮询任务并为一个,省 ~9KB 任务栈给 WiFi esf 池;用户建议）---- */
+static void slow_tick_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(1000));   /* 让各 init 完成 */
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        app_clock_tick();
+        app_alarm_tick();
+        app_timer_tick();
+        app_power_tick();
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "LocalLife boot (S1 skeleton)");
@@ -39,10 +54,13 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_exio_init());
     ESP_ERROR_CHECK(bsp_lcd_init());
 
-    /* 平台服务层 */
+    /* 平台服务层。app_net 最早期启动（2026-11-21 内存挤压终版:esf 池须在堆
+     * 碎裂前拿走 40KB 大块;吃剩 ~12KB 由瘦栈任务使用,见各组件） */
     ESP_ERROR_CHECK(app_event_init());
     ESP_ERROR_CHECK(app_storage_init());
-    ESP_ERROR_CHECK(app_net_init());
+    if (app_net_init() != ESP_OK) {
+        ESP_LOGE(TAG, "app_net init failed, network degraded");
+    }
     ESP_ERROR_CHECK(app_power_init());
 
     /* 功能服务层（S1 均为空壳） */
@@ -62,6 +80,8 @@ void app_main(void)
         app_ui_init();
         bsp_lcd_unlock();
     }
+
+    xTaskCreate(slow_tick_task, "slow_tick", 3 * 1024, NULL, 2, NULL);
 
     ESP_LOGI(TAG, "LocalLife S1 skeleton running");
 }

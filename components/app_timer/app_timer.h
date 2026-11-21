@@ -25,6 +25,7 @@ typedef enum {
 } ll_timer_state_t;
 
 esp_err_t app_timer_init(void);
+void app_timer_tick(void);       /* 1s tick（slow_tick 调度） */
 
 /* 启动倒计时（IDLE/DONE 态才可;时长钳到 [1, LL_TIMER_MAX_S]） */
 esp_err_t app_timer_start(uint32_t duration_s);
