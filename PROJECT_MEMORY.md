@@ -75,6 +75,20 @@
 - iPhone 热点须开"最大兼容性"（=2.4GHz,ESP32 不支持 5GHz）
 - 对完时可 `esp_wifi_stop()+deinit()` 回收 27.4KB,需要时重新 init（~2s 重连）——符合需求 §9 联网降频
 
+**ESP32-S3 内部 SRAM 512KB 完整账本**（map 文件+heap_init 实测,2026-11-21）：
+
+| 区域 | 大小 | 性质 | 可优化？ |
+|---|---|---|---|
+| ICache（指令缓存） | 16KB | 硬件固定 | ✗ |
+| DCache（数据缓存） | 32KB | 硬件固定（PSRAM 必经） | ✗ |
+| IRAM 中断向量 | 1KB | 硬件 | ✗ |
+| IRAM 代码段 | ~204KB | WiFi 驱动/FreeRTOS 内核/中断处理——必须放 SRAM 才能高速执行 | 极有限 |
+| .data+.bss（全局变量） | ~136KB | LVGL ~25K + WiFi/wpa ~20K + mbedcrypto ~15K + lwIP ~12K + FreeRTOS ~8K + libc ~10K + 本项目 ~8K + hal/NVS 等 ~38K | 有限（裁功能才省） |
+| 动态堆（malloc/任务栈） | **116KB** | 唯一可自由分配——任务栈+WiFi esf+DMA 保留池全在此 | ✓ 主战场 |
+| RTC RAM | 7KB | 深度睡眠 | ✗ |
+
+> **结论：512KB 中 ~390KB 在写第一行代码前就被占死**——真正可自由分配的只有 116KB 动态堆,这也是 WiFi 27KB 打得艰难的根本原因。后续大块数据一律 PSRAM（余 7.7MB）。
+
 **WiFi sdkconfig 裁剪定稿**（sdkconfig.defaults 已固化）：
 ```
 SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y    # lwIP 可迁移部分进 PSRAM
