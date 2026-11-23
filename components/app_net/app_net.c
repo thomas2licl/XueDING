@@ -14,6 +14,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
 
@@ -26,6 +27,21 @@ static const char *TAG = "app_net";
 
 static volatile bool s_connected = false;
 static bool s_sntp_started = false;
+
+/* 内存水位探针（2026-11-23 加;板子外测中,待实测校准 PROJECT_MEMORY 的峰值/总账）。
+ * 口径与 esp_get_free_internal_heap_size() 完全一致（它只统计可 DMA 的内部堆,
+ * 见 esp_system_chip.c）——保证和 11-21 的旧数字可比。
+ * internal=此刻内部堆余量;min=开机以来内部堆历史最低水位(=真实峰值,不必掐时机)。
+ * 读法:某探针的 min 比上一探针的 min 更低 → 该阶段瞬时峰值 = 上一探针 internal − 本探针 min;
+ * 若 min 没变,只说明本阶段没创出新低(峰值 ≤ 上一探针 internal − min)。 */
+#define HEAP_PROBE_CAPS (MALLOC_CAP_8BIT | MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
+static void log_heap(const char *where)
+{
+    ESP_LOGI(TAG, "heap[%s]: internal=%u min=%u all=%u", where,
+             (unsigned)heap_caps_get_free_size(HEAP_PROBE_CAPS),
+             (unsigned)heap_caps_get_minimum_free_size(HEAP_PROBE_CAPS),
+             (unsigned)esp_get_free_heap_size());
+}
 
 /* SNTP 同步回调（lwIP 定时器上下文——只做轻量事件转发,勿做 I2C/长操作） */
 static void sntp_sync_cb(struct timeval *tv)
@@ -80,6 +96,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         const bool st = true;
         app_event_post(LL_EV_NET_STATE, &st, sizeof(st), 0);
         ESP_LOGI(TAG, "got ip " IPSTR, IP2STR(&evt->ip_info.ip));
+        log_heap("got-ip");   /* net_init 栈已释放 + 连接(扫描/握手/DHCP)开销已发生 */
         start_sntp();
     }
 }
@@ -97,13 +114,14 @@ static void net_task(void *arg)
 
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_LOGI(TAG, "before wifi init: internal=%u", (unsigned)esp_get_free_internal_heap_size());
+    log_heap("before-init");
     const esp_err_t err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_init err=0x%x internal=%u — network degraded",
                  (int)err, (unsigned)esp_get_free_internal_heap_size());
         vTaskDelete(NULL);
     }
+    log_heap("after-init");
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
@@ -119,9 +137,7 @@ static void net_task(void *arg)
 
     ESP_LOGI(TAG, "wifi sta started (ssid=%s, temp config)", WIFI_TMP_SSID);
     /* 内存全景:WiFi 驱动占的内部 RAM 此刻已锁定(归驱动所有,不随 net_init 栈释放) */
-    ESP_LOGI(TAG, "after wifi start: internal=%u all=%u",
-             (unsigned)esp_get_free_internal_heap_size(),
-             (unsigned)esp_get_free_heap_size());
+    log_heap("after-start");
     vTaskDelete(NULL);   /* 事件驱动后续连接,任务功成身退 */
 }
 
