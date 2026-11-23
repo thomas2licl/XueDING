@@ -21,8 +21,6 @@ static const char *TAG = "home_cards";
 /* ================================================================== */
 /* 卡片一：时钟卡 2（日期星期/64px 时间/下一条闹钟 + 状态行:电池/WiFi/蓝牙） */
 /* ================================================================== */
-static lv_obj_t *c_time, *c_date, *c_status;
-static ll_battery_state_t s_batt_snap;        /* 电池快照（on_battery 事件推送） */
 
 /* 时钟卡 2 布局（2026-11-21 用户设计,二轮调整）:日期星期(顶)/时间(垂直居中)/
  * 状态行(底)三块上下均匀分布。状态行=flex 行,顺序:电池 → WiFi(未连接右下
@@ -152,8 +150,9 @@ static lv_obj_t *card_clock_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(c_alarm, lv_color_hex(UI_COL_WEAK), 0);
     lv_label_set_text(c_alarm, "-");
 
-    /* 初始按连接状态(钩子默认全未连接)应用显隐 */
-    lv_obj_add_flag(c_bt, LV_OBJ_FLAG_HIDDEN);
+    /* 按上次钩子状态应用显隐（切卡重建时沿用,否则已联网仍显红叹号） */
+    (s_wifi_ok ? lv_obj_add_flag : lv_obj_clear_flag)(c_wifi_excl, LV_OBJ_FLAG_HIDDEN);
+    (s_bt_ok ? lv_obj_clear_flag : lv_obj_add_flag)(c_bt, LV_OBJ_FLAG_HIDDEN);
     return NULL;
 }
 

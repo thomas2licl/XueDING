@@ -54,8 +54,8 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_exio_init());
     ESP_ERROR_CHECK(bsp_lcd_init());
 
-    /* 平台服务层。app_net 最早期启动（2026-11-21 内存挤压终版:esf 池须在堆
-     * 碎裂前拿走 40KB 大块;吃剩 ~12KB 由瘦栈任务使用,见各组件） */
+    /* 平台服务层。app_net 最早期启动（2026-11-21 内存挤压终版:esp_wifi_init 的
+     * 静态池须在堆碎裂前拿走大块连续内存,见 PROJECT_MEMORY #27） */
     ESP_ERROR_CHECK(app_event_init());
     ESP_ERROR_CHECK(app_storage_init());
     if (app_net_init() != ESP_OK) {

@@ -85,10 +85,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
 }
 
 /* WiFi 初始化独立任务（2026-11-21 内存挤压终版架构）:
- * esf 静态池需大块连续内部 RAM——最后启动时堆已碎片化拿不出整块,
- * 先启动又会挤死 motion/timer 任务栈。折衷:main 早期建本任务(小栈),
- * 延时 1s 再做 esp_wifi_init——此刻小任务已建、LVGL 大户(渲染缓冲/9 屏)
- * 尚未创建、堆仍完整,esf 与任务栈各得其所。 */
+ * esp_wifi_init 要一大块连续内部 RAM——堆碎裂后拿不出(NO_MEM 0x101),
+ * 故 WiFi 先启、任务后建(PROJECT_MEMORY #27):main 早期建本任务(小栈),
+ * 延时 50ms 等 event/storage 就绪即做 esp_wifi_init,此刻堆仍完整。 */
 static void net_task(void *arg)
 {
     (void)arg;
@@ -119,7 +118,7 @@ static void net_task(void *arg)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "wifi sta started (ssid=%s, temp config)", WIFI_TMP_SSID);
-    /* 内存全景:WiFi 驱动占的 ~25KB 此刻已锁定(归驱动所有,随 net_init 栈释放无关) */
+    /* 内存全景:WiFi 驱动占的内部 RAM 此刻已锁定(归驱动所有,不随 net_init 栈释放) */
     ESP_LOGI(TAG, "after wifi start: internal=%u all=%u",
              (unsigned)esp_get_free_internal_heap_size(),
              (unsigned)esp_get_free_heap_size());
@@ -131,7 +130,7 @@ esp_err_t app_net_init(void)
     /* WiFi 事件挂 default loop——该 loop 由 app_event_init 创建（main 先于本 init）,
      * 此处不可重复创建(重复创建 abort,2026-11-21 真机踩坑) */
     /* 栈 4KB:esp_wifi_init 调用深,2KB 实测溢出(2026-11-21 真机);
-     * 优先级 3>main:抢先在 main 建任务前把 esf 40KB 大块拿走(堆完整窗口) */
+     * 优先级 3>main:建完即抢占 main,趁堆完整先拿走 esp_wifi_init 的大块连续内存 */
     if (xTaskCreate(net_task, "net_init", 4 * 1024, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "create net task failed");
         return ESP_FAIL;

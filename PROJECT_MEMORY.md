@@ -71,7 +71,7 @@
 **WiFi 内存全景（真机实测）**：
 - WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
 - net_init 任务栈 4KB 是临时的,vTaskDelete 自删即回收
-- **内部 RAM 总账**：116KB 可用 = LVGL 任务栈~6K + DMA 保留池 16K + 各任务栈~15K + WiFi 驱动 27.4K + 剩余 ~11.4K
+- **内部 RAM 总账（大头项,非精确账）**：116KB 可用 ≈ LVGL 任务栈~6K + DMA 保留池 16K + 各任务栈~15K + WiFi 驱动 27.4K + 剩余 ~11.4K（以上相加 75.8K,未含系统任务栈/NVS/netif/碎片约 40K;精确值以真机日志为准,2026-11-23 校准）
 - iPhone 热点须开"最大兼容性"（=2.4GHz,ESP32 不支持 5GHz）
 - 对完时可 `esp_wifi_stop()+deinit()` 回收 27.4KB,需要时重新 init（~2s 重连）——符合需求 §9 联网降频
 
@@ -102,12 +102,13 @@ SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y    # lwIP 可迁移部分进 PSRAM
 SPIRAM_MALLOC_RESERVE_INTERNAL=16384  # 保留池 32K→16K
 ESP_WIFI_STATIC_TX_BUFFER_NUM=6    # 16→6 (esf 池大头,省 16KB)
 ESP_WIFI_STATIC_RX_BUFFER_NUM=2    # 4→2
-ESP_WIFI_RX_MGMT_BUF_NUM_DEF=2     # 5→2
 LWIP_MAX_SOCKETS=4                  # 10→4
 LWIP_TCPIP_TASK_STACK_SIZE=2048     # 3072→2048
 # AMPDU TX/RX 关闭（吞吐无关紧要,对时场景）
 # WPA3 关闭
 ```
+
+**未砍候选项（2026-11-23 记）**：`CONFIG_LWIP_IPV6=y` 仍开着——用户决定**先不动，后面真不够内存时再关**（对时/和风走 IPv4，关掉不影响功能；能省多少未实测）。
 
 ---
 
