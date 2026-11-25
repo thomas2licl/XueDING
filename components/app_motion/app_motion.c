@@ -33,7 +33,7 @@ static const char *TAG = "app_motion";
 #define MOTION_AUTO_ROTATE      1       /* 方向自适应已生效（轴映射已标定） */
 
 /* 横放判定阈值:重力主要落在长边轴上（平放/竖放/斜置不判定） */
-#define AXIS_LONG_THR_G         0.70f
+#define AXIS_LONG_THR_G         0.50f
 #define AXIS_CROSS_THR_G        0.40f
 
 /* 由重力向量判定横放方向。横放返回 true 并给出目标旋转方向 */
