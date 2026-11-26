@@ -81,7 +81,7 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 （Bypass 过执行策略 + Remove-Item Env:MSYSTEM 过环境检查;`env -u MSYSTEM` 对该变量无效）。
 另：**烧录偶发 "Could not open COM4, port busy"**（无占用进程,原因未查,2026-11-19 出现 3 次）——直接重试即过,勿排查。
 COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片）——日志+烧录+JTAG 三合一,任意串口终端（PuTTY 等）可直看日志,详见 §6.6 档案。
-**当前串口 COM9**（2026-11-25 换板后;旧板为 COM4）——烧录 `idf.py -p COM9 flash`;非交互抓日志可用 PowerShell `System.IO.Ports.SerialPort` 打开 COM9 读 N 秒（app 日志在该口可见）。
+**当前串口 COM9**（2026-11-25 换板后;旧板为 COM4）——烧录 `idf.py -p COM9 flash`;非交互抓日志可用 PowerShell `System.IO.Ports.SerialPort` 打开 COM9 读 N 秒（app 日志在该口可见）;打开串口会使板子复位（USB_UART_CHIP_RESET）,抓到的是从启动起的完整日志。
 **git push/fetch 直连 github.com 443 超时**（2026-11-25）：git 不读 Windows 系统代理——push 加 `-c http.proxy=http://127.0.0.1:7897`（系统代理端口,仅本次命令生效,未写入 git 配置）。
 
 ---
@@ -282,7 +282,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 
 **硬件回来后**（旧板 2026-11-23 送外测;2026-11-25 起已换用另一块板子继续开发,串口 COM9）
 - [ ] 验收时钟卡网络图标修复：连 WiFi 后时钟槽切走再切回,叹号应保持消失（需 WiFi 连上;2026-11-25 两次抓日志内 WiFi 均未连上,仍未验）
-- [ ] 读 app_net `heap[...]` 探针日志,校准 PROJECT_MEMORY WiFi 初始化峰值（51K/40K）与内部 RAM 总账（**2026-11-25 现板已读到 3/4 点**,两次启动一致:before-init internal≈39.0K → after-init≈11.9K → after-start 期间最低≈9.7K,即峰值≈29KB,与 51K 不符;缺 got-ip 点,**尚未据此校准档案**）
+- [x] 读 app_net `heap[...]` 探针日志,校准 PROJECT_MEMORY WiFi 初始化峰值（51K/40K）与内部 RAM 总账（**2026-11-26 完成**:现板连上热点,四点齐全——before-init 38883 → after-init 15223 → start 最低 13167 → got-ip 最低 11231,全链路峰值 27652 字节=27.0 KiB;11-25 未连 WiFi 的两次为 29148~29320;51K/40K 不成立,实测已入 PROJECT_MEMORY;总账为估算、量级一致,未改）
 - [ ] **JS 方案生死线实验**：PSRAM 任务栈（xTaskCreateStatic+SPIRAM 栈缓冲）——①正常跑 ②**"零 flash 接触"纪律验证**（官方文档明确:PSRAM 栈任务自己调 flash/NVS 必崩;脚本任务设计为永不碰 flash,本项实测"其他任务写 flash 时本任务仅被中断"是否安全）③量栈高水位与切换延迟;顺带加 PSRAM 水位探针（MALLOC_CAP_SPIRAM）把 PSRAM 余量变成精确数
 - [ ] JS 引擎 spike（栈实验通过才做）：首选试官方组件 `makgordon/esp-mquickjs`（组件注册表现成,ESP32-S3 支持）;对照 QuickJS-NG（async/await 对 AI 生成友好,esp-mquickjs 功能子集待确认）;量基准/TLS 缓冲落点/GC 停顿
 - [ ] （不依赖板子）JS 卡片 API 契约文档：卡片 schema + native API 表 + net.fetch 护栏（max_bytes/timeout/限流）+ 凭证 NVS 按名引用 + 沙箱规则（零 flash 接触）+ 渲染分级
@@ -395,6 +395,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 
 | 日期 | 变更内容 |
 |------|----------|
+| 2026-11-26 | **内存水位探针校准档案（"硬件回来后"待办第 2 项收官）**：现板连上临时热点,四点齐全——before-init internal=38883 → after-init 15223（init 占 23660,无更深瞬时下探）→ start 最低 13167 → got-ip 最低 11231、回升至 16495;全链路峰值=27652 字节（27.0 KiB）,11-25 未连 WiFi 的两次为 29148~29320（28.5~28.6 KiB）——**记忆值 51K/40K 不成立**。发现:init 占用在启动间相差 3432 字节,原因未查。PROJECT_MEMORY"WiFi 内存全景"增实测一条+索引 #33;§6.2 该项勾销。另:SNTP 对时在现板全通;打开 COM9 会使板子复位（USB_UART_CHIP_RESET） |
 | 2026-11-26 | **收工自查补账（11-25 自查结果当日未报出）**：逐文档核对 11-25 的阈值调整/换板/串口/代理——需求 §1、交互规范 §八、UI 跟踪仅文字描述、不涉数值，无需改；补齐 3 处不一致：①架构任务模型表 `motion_task` 行按实现更正（200ms 轮询/栈 3KB，原写"中断驱动/4KB"，S1.5 起的偏差）；②架构风险表 ② 补实况（无滞回区间、阈值 0.50g、零偏余量，指向 PROJECT_MEMORY #31）；③§6.2"硬件回来后"小节标注 11-25 起换板开发，并记入现板内存探针 3/4 点读数（峰值≈29KB，缺 got-ip，未校准档案）。架构文档不升版本（属更正，非设计变更）；§6.6 标题的串口标注经用户确认不做 |
 | 2026-11-25 | **换板后方向切换难 → 阈值 0.70→0.50**：换用另一块板子（串口 COM9）后 USB 朝右要倾斜很多才切。排查：阈值逻辑自 S1.5 未动且两方向对称（git 历史确认）；根因=**芯片个体零偏**（QMI8658A 数据手册 Table 7：初始零偏容差 ±100mg、温漂 ±1mg/°C）叠加 0.70g 阈值余量不足（后仰 45° 时余量仅 0.007g）；当日 monitor 日志实证：USB 朝右后仰约 31° 时 ay=−0.86 正常切，后仰约 45° 时 ay=−0.70 判 flat 不切、约 1s 后立直才切（该板零偏值未测得，日志无 USB 朝左读数）。**修复：`AXIS_LONG_THR_G` 0.70→0.50**（app_motion.c 一行；可切范围后仰 ≤45°→≤60°，45° 时余量 0.2g；短边轴阈值 0.40 不动）。编译 ✓（仅重编 app_motion）、烧录 COM9 ✓、启动日志正常；**手感验收 ✓**（用户实测，USB 朝右可正常切换）。未做：逐板零偏校准（芯片支持 `CTRL_CMD_ACCEL_HOST_DELTA_OFFSET`，偏移掉电丢失需开机重写，可存 NVS），阈值仍不够时启用。⑵环境入档（§2）：当前串口 COM9、push 需走系统代理；PROJECT_MEMORY 增 #31/#32，#21 标注现板串口 |
 | 2026-11-23 | **WiFi 内存档案对账校准（上下文重建后逐项核对代码/sdkconfig/git）**：①PROJECT_MEMORY 裁剪定稿块删 RX_MGMT=2（sdkconfig 有值但 defaults 未固化,上次结论对内存无感）;②内部 RAM 总账改"≈ 大头项"并注明相加 75.8K、约 40K 未列（系统任务栈/NVS/碎片）,精确值待真机;③新增"未砍候选项:IPv6 仍开,先不动,真不够再关";④代码注释校准（app_net.c "延时 1s"→实际 50ms,删"40KB/~25KB/~12KB"无据数字;main.c 同）,纯注释不改行为;⑤开发规范新增"改文件前先确认"。**esp_wifi_init 瞬时峰值（用户记忆 51KB/注释曾写 40KB）未入档,待真机复核**;⑥收尾:倒计时卡 11-21 三次微调入档;时钟卡重建后网络图标状态修复（**未真机验收**,下次烧录时验:连 WiFi 后时钟槽切走再切回,叹号应保持消失）;ui_home_cards 重复声明清理;⑦文档"淡入 150ms"→"滑动切换 160ms"与代码对齐（用户定稿:卡片切换=滑动,与其他交互一致）;⑧版本引用回扫:交互规范升 **V1.6**（4.2 两处动画改滑动）;现状型旧版本号更新——UI 跟踪头部/§2"规范 V1.4→V1.6、架构 V0.8→V0.9",进度头部与 §4 树"需求 V0.1→V0.9",§5 #5"架构 V0.8→V0.9",架构依据行"需求 V0.2→V0.9",需求"当前阶段说明"V0.2→V0.9（历史记录行里的旧版本号保留为史实）;⑨头部"代码基线"说明更正（厂商原始代码已被自研组件全面替换,原始版见仓库初始提交）;⑩app_net 加内存水位探针（log_heap×4：before-init/after-init/after-start/got-ip），min=开机以来内部堆最低水位即真实峰值；口径与 esp_get_free_internal_heap_size 一致（8BIT|DMA|INTERNAL，只统计可 DMA 的内部堆）；**板子已送外测、未实测**，回来后读日志校准峰值（51K/40K）与总账；编译 ✓；⑪**JS runtime 方案预研+网络查证（畅想转预研）**：技术路线=QuickJS 系引擎+PSRAM 堆/PSRAM 栈+专用 SPIRAM 分配器（不动全局 malloc 路由）；内存账初评（SRAM 11.4K→~7K、PSRAM ~1MB、flash ~1.1MB,全为估算待实测）；**官方文档+真实案例确认:PSRAM 栈任务自己调 flash/NVS 必崩**（flash 写期间 cache 禁用→PSRAM 不可访问）→设计纪律=脚本任务零 flash 接触（NVS/文件走 C 侧内部栈,ESP_LOG 走 UART 不写 flash）；意外收获=官方组件注册表已有 makgordon/esp-mquickjs（Bellard MQuickJS 的 ESP32-S3 IDF 封装）可作 spike 首选；栈实验通过才进引擎 spike,方案细节文档同步到 §6.2 待办 |

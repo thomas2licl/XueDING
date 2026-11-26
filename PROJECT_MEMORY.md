@@ -74,10 +74,12 @@
 | 28 | 11-21 | net_init 任务 2KB 栈溢出→stack overflow 复位 | esp_wifi_init 调用深,任务栈至少 4KB | app_net.c |
 | 29 | 11-21 | motion 栈砍 2KB 后溢出 | 3KB 是底线（IMU 读+浮点+LVGL 锁切旋转）,不动 | app_motion.c |
 | 30 | 11-21 | sdkconfig sed 改了但数字不变 | sdkconfig 需 **reconfigure** 才进 sdkconfig.h,直接改 sdkconfig 后 `idf.py reconfigure` | 流程 |
+| 33 | 11-26 | esp_wifi_init 峰值凭记忆记成 51K/40K | 内存数字以水位探针实测为准:全链路峰值 27.0~28.6 KiB | 本节下文 |
 
 **WiFi 内存全景（真机实测）**：
 - WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
 - net_init 任务栈 4KB 是临时的,vTaskDelete 自删即回收
+- **水位探针实测（2026-11-25/26,app_net `heap[...]` 四点;口径=内部堆当前值与开机以来最低水位）**:esp_wifi_init 占用=init 前后差 **27092/27092/23660 字节**（三次启动,相差 3432 字节,原因未查）,init 期间无更深瞬时下探;start 期间再瞬时下探 1756~1796 字节;**全链路峰值（init 前内部堆 − 最低水位）=27652~29320 字节（27.0~28.6 KiB）**——曾记的 51K/40K 不成立;未连 WiFi 时最低水位出现在 start 段,连上的那次连接过程再低 1936 字节（got-ip 最低 11231,之后回升到 16495）
 - **内部 RAM 总账（大头项,非精确账）**：116KB 可用 ≈ LVGL 任务栈~6K + DMA 保留池 16K + 各任务栈~15K + WiFi 驱动 27.4K + 剩余 ~11.4K（以上相加 75.8K,未含系统任务栈/NVS/netif/碎片约 40K;精确值以真机日志为准,2026-11-23 校准）
 - iPhone 热点须开"最大兼容性"（=2.4GHz,ESP32 不支持 5GHz）
 - 对完时可 `esp_wifi_stop()+deinit()` 回收 27.4KB,需要时重新 init（~2s 重连）——符合需求 §9 联网降频
