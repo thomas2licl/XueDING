@@ -21,6 +21,7 @@ typedef struct {
     const char *name;                              /* 卡名（日志/调试） */
     lv_obj_t *(*create)(lv_obj_t *parent);         /* 构建卡片内容（往槽容器填控件） */
     void (*refresh)(void);                         /* 刷新数据（1s 轮询当前显示的卡） */
+    void (*destroy)(lv_obj_t *card);               /* 卡片层销毁前收尾,可 NULL（清零本卡持有的控件句柄,防悬空） */
 } home_card_t;
 
 /* 在主页 screen 上构建三槽+初始卡片（须持 LVGL 锁） */

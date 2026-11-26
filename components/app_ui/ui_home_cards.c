@@ -3,6 +3,7 @@
  * （时钟卡2/天气/倒计时/提醒）——用户设计定稿后逐卡重写内部 UI,框架不动。 */
 
 #include <stdio.h>
+#include <stdint.h>
 
 #include "esp_log.h"
 
@@ -156,6 +157,17 @@ static lv_obj_t *card_clock_create(lv_obj_t *parent)
     return NULL;
 }
 
+/* 卡片层销毁前收尾:清零本卡持有的控件句柄。不清则滑走后句柄悬空,
+ * home_cards_set_net 会写已释放对象——WiFi 连不上时每 2.4s 重试一次、每次发
+ * NET_STATE 事件,恰逢时钟卡被滑走即触发（"滑动卡片有概率死机",2026-11-26 用户报）。
+ * 仅当句柄确属被删卡片层时才清,防误清别槽新建的同名卡。 */
+static void card_clock_destroy(lv_obj_t *card)
+{
+    if (c_time != NULL && lv_obj_get_parent(c_time) == card) {
+        c_time = c_date = c_row = c_batt = c_wifi = c_wifi_excl = c_bt = c_alarm = NULL;
+    }
+}
+
 /* ================================================================== */
 /* 卡片二：天气（占位,U8 WiFi+和风接入后填真数据）                        */
 /* ================================================================== */
@@ -259,7 +271,7 @@ static lv_obj_t *card_reminder_create(lv_obj_t *parent)
 /* 卡片注册表（新卡片在此登记即可被所有槽显示）                            */
 /* ================================================================== */
 static const home_card_t k_cards[] = {
-    { .name = "时钟",  .create = card_clock_create,    .refresh = card_clock_refresh },
+    { .name = "时钟",  .create = card_clock_create,    .refresh = card_clock_refresh, .destroy = card_clock_destroy },
     { .name = "天气",  .create = card_weather_create,  .refresh = card_weather_refresh },
     { .name = "倒计时", .create = card_timer_create,   .refresh = card_timer_refresh },
     { .name = "提醒",  .create = card_reminder_create, .refresh = card_reminder_refresh },
@@ -285,7 +297,10 @@ static void card_slide_cb(void *obj, int32_t y)
 
 static void card_slide_del_cb(lv_anim_t *a)
 {
-    lv_obj_delete((lv_obj_t *)a->var);
+    lv_obj_t *obj = (lv_obj_t *)a->var;
+    const int idx = (int)(intptr_t)lv_obj_get_user_data(obj);   /* slot_load 写入的旧卡索引 */
+    if (k_cards[idx].destroy) k_cards[idx].destroy(obj);        /* 先清句柄,再删对象 */
+    lv_obj_delete(obj);
 }
 
 /* 卡片控件为单例（static 句柄）——同一卡不得同时在两槽显示:
@@ -302,14 +317,17 @@ static bool card_in_use(int idx, const slot_t *except)
  * LV_DIR_NONE=初次构建,无动画)。旧卡反向滑出后自动销毁。 */
 static void slot_load(slot_t *s, int idx, lv_dir_t dir)
 {
+    const int old_idx = s->idx;    /* 旧卡索引须在改写前留存（销毁收尾钩子要用） */
     s->idx = idx;
 
-    /* 旧卡层:反向滑出 + 动画完成销毁（无动画直接删） */
+    /* 旧卡层:反向滑出 + 动画完成销毁（无动画直接删）;两条路径删除前都先调卡片收尾钩子清句柄 */
     if (s->card) {
         lv_obj_t *old = s->card;
         if (dir == LV_DIR_NONE) {
+            if (k_cards[old_idx].destroy) k_cards[old_idx].destroy(old);
             lv_obj_delete(old);
         } else {
+            lv_obj_set_user_data(old, (void *)(intptr_t)old_idx);   /* 滑出动画完成时的收尾钩子要读 */
             const int32_t out_y = (dir == LV_DIR_TOP) ? -158 : 158;
             lv_anim_t a;
             lv_anim_init(&a);

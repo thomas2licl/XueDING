@@ -16,6 +16,7 @@
 
 #include "bsp_lcd.h"
 #include "app_event.h"
+#include "app_net.h"
 #include "app_power.h"
 #include "app_clock.h"
 #include "app_alarm.h"
@@ -207,10 +208,13 @@ static void on_net_state(void *arg, esp_event_base_t base, int32_t id, void *dat
 {
     LV_UNUSED(arg); LV_UNUSED(base); LV_UNUSED(id);
     const bool connected = *(const bool *)data;
-    if (bsp_lcd_lock(200)) {
-        home_cards_set_net(connected, false);
-        bsp_lcd_unlock();
+    if (!bsp_lcd_lock(200)) {
+        /* 拿不到锁=本次更新被丢弃（界面状态滞后到下次事件）,必须留痕 */
+        ESP_LOGW(TAG, "net state -> %s DROPPED (lvgl lock timeout)", connected ? "connected" : "disconnected");
+        return;
     }
+    home_cards_set_net(connected, false);
+    bsp_lcd_unlock();
     ESP_LOGI(TAG, "net state -> %s", connected ? "connected" : "disconnected");
 }
 
@@ -364,6 +368,16 @@ esp_err_t app_ui_init(void)
     app_event_subscribe(LL_EV_ORIENTATION, on_orientation, NULL);
     app_event_subscribe(LL_EV_ALARM_FIRED, on_alarm_fired, NULL);
     app_event_subscribe(LL_EV_NET_STATE, on_net_state, NULL);
+
+    /* 初值同步（2026-11-26 真机踩坑）:WiFi 可能在界面建好前就已连上（开机日志
+     * got ip 3.3s / UI ready 5.3s）,那次 NET_STATE 无人订阅即丢失,s_wifi_ok 永远
+     * 停在 false——时钟卡叹号滑走再滑回也不消失。订阅后立即查一次当前状态补上。 */
+    /* 本函数由 main 持 LVGL 锁调用（main.c: bsp_lcd_lock(-1) → app_ui_init）,不可再拿
+     * 同一把锁——bsp_lcd_lock 不可重入,自己等自己 200ms 超时后静默跳过
+     * （2026-11-26 首版修复栽在此处:日志打了 connected,初值却没写进去） */
+    const bool net0 = app_net_is_connected();
+    home_cards_set_net(net0, false);
+    ESP_LOGI(TAG, "net state init -> %s", net0 ? "connected" : "disconnected");
 
     ESP_LOGI(TAG, "UI ready: home v2(3-col) + swipe nav (%d pages)", UI_PAGE_COUNT);
     return ESP_OK;
