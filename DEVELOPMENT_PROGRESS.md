@@ -286,6 +286,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 - [ ] **JS 方案生死线实验**：PSRAM 任务栈（xTaskCreateStatic+SPIRAM 栈缓冲）——①正常跑 ②**"零 flash 接触"纪律验证**（官方文档明确:PSRAM 栈任务自己调 flash/NVS 必崩;脚本任务设计为永不碰 flash,本项实测"其他任务写 flash 时本任务仅被中断"是否安全）③量栈高水位与切换延迟;顺带加 PSRAM 水位探针（MALLOC_CAP_SPIRAM）把 PSRAM 余量变成精确数
 - [ ] JS 引擎 spike（栈实验通过才做）：首选试官方组件 `makgordon/esp-mquickjs`（组件注册表现成,ESP32-S3 支持）;对照 QuickJS-NG（async/await 对 AI 生成友好,esp-mquickjs 功能子集待确认）;量基准/TLS 缓冲落点/GC 停顿
 - [ ] （不依赖板子）JS 卡片 API 契约文档：卡片 schema + native API 表 + net.fetch 护栏（max_bytes/timeout/限流）+ 凭证 NVS 按名引用 + 沙箱规则（零 flash 接触）+ 渲染分级
+- [ ] （栈实验通过后）**XIP from PSRAM 验证**：开 `CONFIG_SPIRAM_XIP_FROM_PSRAM` 后,PSRAM 栈任务能否安全调用 flash 驱动（文档称写 flash 期间不关缓存）;量 PSRAM 多占多少、开机变慢多少。依据与风险见 §6.8
 
 ### 6.7 旋转振荡 bug 档案（2026-11-14,记录在案暂不修）
 
