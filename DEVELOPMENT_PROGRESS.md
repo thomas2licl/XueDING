@@ -228,11 +228,11 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 - 移植到本工程：拷 `codec_board` + `audio_bsp` 两个组件，`idf_component.yml` 加 `espressif/esp_codec_dev` 依赖即可
 - 白噪音资源：少量可 EMBED 嵌入；批量音频建议放 SD 卡（板载 TF 卡槽，见例程 04）
 
-**③ ESP-SR 离线语音识别 — 可行 ✅（需 PSRAM，本板 8MB Octal 满足）**
+**③ ESP-SR 离线语音识别 — 可行 ✅（需 PSRAM，本板 8MB Octal 满足；另需内部 RAM 约 65~78KB，当前不够，见下）**
 
 - 流水线：AFE（AEC 回声消除/降噪/双麦波束）→ WakeNet（唤醒）→ MultiNet（命令词）
 - MultiNet 原生支持**中文拼音命令词**，最多 200 条，运行时可增删改 → 覆盖需求"查询时间/天气、控制音乐、设闹钟"等固定命令
-- 资源占用（官方 benchmark）：MultiNet5 Q8 ≈ 16KB RAM + **2310KB Flash**；WakeNet ≈ 180KB 内存
+- 资源占用（官方 benchmark；2026-11-27 复查更正:原记"MultiNet5 Q8 ≈ 16KB RAM + 2310KB Flash、WakeNet ≈ 180KB 内存"与现行官方文档不符,2310KB 在官方表里是 PSRAM）:MultiNet5 ≈ 内部 RAM 16KB + PSRAM 2310KB（MultiNet7:18KB + 2920KB）;AFE 链（回声消除+VAD+唤醒词 WakeNet9,单麦克风+1 路参考）内部 RAM 49~60KB + PSRAM 740~776KB。**合计内部 RAM 约 65~78KB**（不含 I2S 缓冲与任务栈）,而当前内部 RAM 只剩约 11~16KB——PSRAM 够、内部 RAM 不够,语音上板前须先腾。数字取自官方文档 master,引入时以所选版本为准
 - **版本坑：esp-sr 1.3.3 有命令词 bug，须用 ≥1.4.2**
 - 唤醒词：官方免费词（如 "Hi,乐鑫"）直接可用；完全自定义需乐鑫生成（收费），第一阶段用免费词
 - 参考：[ESP-SR 命令词文档](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/speech_command_recognition/README.html)、[官方 Benchmark](https://docs.espressif.com/projects/esp-sr/zh_CN/latest/esp32s3/benchmark/README.html)、[乐鑫语音方案页](https://www.espressif.com/zh-hans/solutions/audio-solutions/esp-skainet/overview)
@@ -441,7 +441,7 @@ I (28061) psram_stack: [3] notify round-trip us (min/avg/max): PSRAM<->int 30/31
 | 核 0 写,掐在界面正忙时写 | 5 遍 60 次:3 遍掐在界面刚开工,2 遍掐在帧的中段（确认撞上 5 次、8 次） | 19~30 ms | 最长被停 28 ms,一致,完好 | 有响应,不崩;被撞的帧 65~68 ms（平时 41） |
 
 - 结论:文档所说"别的任务写 flash,PSRAM 栈任务只是被暂停"属实,暂停时长≈那次 flash 操作的耗时;写完后它的数据与栈原样。
-- **写 flash 撞上屏幕刷新**:屏幕刷新的 DMA 缓冲在 PSRAM（`bsp_lcd.c` 的 `s_trans_buf`）,官方文档提醒二者共用总线。实测相撞后传输不出错,只是被撞的那一帧慢约 26ms,下一帧恢复,界面不卡死。其中一遍是用户正在滑页面（整页重绘）时写的,同样无事。花屏与否属目视项,**用户尚未明确反馈**;日志只能证明没崩、没卡、帧没丢。
+- **写 flash 撞上屏幕刷新**:屏幕刷新的 DMA 缓冲在 PSRAM（`bsp_lcd.c` 的 `s_trans_buf`）,官方文档提醒二者共用总线。实测相撞后传输不出错,只是被撞的那一帧慢约 26ms,下一帧恢复,界面不卡死。其中一遍是用户正在滑页面（整页重绘）时写的,同样无事。用户目视复核（掐帧中段那遍）:无花屏、无黑屏、无重启,一切正常。
 - 全天共七十多次擦写,读回核对全部一致,无崩溃、无看门狗、无报错。
 - 测试任务改为定期让出 CPU（每 2 万轮睡 1ms）后不再触发任务看门狗——上一轮的告警确系测试负载占满 core 1 所致。
 
@@ -503,7 +503,8 @@ I (24566) psram_stack: [2] phase 1/1: flash writer on core 0, written mid-frame 
 
 | 日期 | 变更内容 |
 |------|----------|
-| 2026-11-27 | **生死线实验第 ② 项通过 + 写 flash 撞屏幕刷新实测（搬迁前第 1 步收官）**：用存档代码的内部栈任务写分区表外空白扇区（全天七十多次擦写,读回核对一致）——核 0 写、核 1 写、不管屏幕、掐在界面正忙时写四种写法下,PSRAM 栈任务最长被停 28ms,数据与栈守卫完好,界面不卡不崩。屏幕 DMA 缓冲在 PSRAM,与写 flash 相撞时传输不出错,被撞的帧慢约 26ms 后恢复（花屏与否待用户目视反馈）。数字与原始日志入 §6.8 实测记录;PROJECT_MEMORY #38 补充、新增 #39、§1a 补实测说明;测试代码已撤出固件并烧回干净固件,存档 `tools/experiments/psram_stack_test.c` 更新为实跑版本（含两种跑法开关） |
+| 2026-11-27 | **资料查证入档：音频/语音哪些内存必须在内部 RAM**（只查源码与官方文档,未上板）——I2S 驱动自己的 DMA 缓冲只能内部 RAM（默认约 3~6KB 一路）,交给 I2S 读写的数据缓冲可放 PSRAM;ESP-SR 除 PSRAM 外另需内部 RAM 约 65~78KB（AFE 链 49~60KB + MultiNet 16~18KB）,当前内部 RAM 只剩约 11~16KB。§6.1③ 资源占用一行按现行官方文档更正;PROJECT_MEMORY #40。另:写 flash 撞屏幕刷新已获用户目视复核（无花屏、无黑屏、无重启） |
+| 2026-11-27 | **生死线实验第 ② 项通过 + 写 flash 撞屏幕刷新实测（搬迁前第 1 步收官）**：用存档代码的内部栈任务写分区表外空白扇区（全天七十多次擦写,读回核对一致）——核 0 写、核 1 写、不管屏幕、掐在界面正忙时写四种写法下,PSRAM 栈任务最长被停 28ms,数据与栈守卫完好,界面不卡不崩。屏幕 DMA 缓冲在 PSRAM,与写 flash 相撞时传输不出错,被撞的帧慢约 26ms 后恢复（用户目视复核:无花屏、无黑屏、无重启）。数字与原始日志入 §6.8 实测记录;PROJECT_MEMORY #38 补充、新增 #39、§1a 补实测说明;测试代码已撤出固件并烧回干净固件,存档 `tools/experiments/psram_stack_test.c` 更新为实跑版本（含两种跑法开关） |
 | 2026-11-27 | **JS 方案生死线实验 ①③ 通过（PSRAM 任务栈可用）**：临时测试任务钉在 core 1、不耦合业务——PSRAM 栈任务（16KB）与内部栈对照任务跑同一份负载,结果逐位相同;负载耗时慢约 1%（7340/7315 vs 7269/7276 ms）,栈峰值 ~3.1KB,任务切换往返 30µs 与内部栈无差别,不崩、界面照常。看门狗告警 2 次系测试负载占满 core 1 饿死 IDLE1,与 PSRAM 栈无关。数字、原始日志与附带发现入 §6.8"实测记录",PROJECT_MEMORY 加 #38;②flash 并发、④XIP from PSRAM、PSRAM 水位探针未做。测试代码已从固件移除（重新编译烧录,开机日志干净）,源码存档 `tools/experiments/psram_stack_test.c` |
 | 2026-11-27 | **flash 操作与外部内存机制查证入档（§6.8,ESP32-S3 开发资产）**：JS 方案"生死线实验"动手前,用户逐轮追问把机制讨论透——写/擦 flash（及经 flash 驱动的读）期间两核缓存关闭,flash 与 PSRAM 同不可访问;PSRAM 栈任务不得调用任何走 flash 驱动的 API（读也不行）,别的任务写 flash 时它只是被暂停;flash 芯片无"XIP/写"模式切换。新增 §6.8 档案（速查表/五步机制/官方原文/源码出处）,PROJECT_MEMORY 关键约束增一行。**新发现**：`CONFIG_SPIRAM_XIP_FROM_PSRAM` 文档称可让写 flash 期间不关缓存,若属实则上述约束解除——未实测,列为 JS 实验第 ④ 项 |
 | 2026-11-26 | **时钟卡 WiFi 叹号开机常驻修复 + 滑动卡片死机修复（"硬件回来后"待办第 1 项收官）**：①**开机叹号**（用户报，验收 ✓）：开机日志定位 got ip 4.3s 早于 UI ready 5.4s,NET_STATE 无人订阅即丢失,s_wifi_ok 停在 false;修复=app_ui_init 订阅后调 `app_net_is_connected()` 补初值（app_ui 组件新增 app_net 依赖）。首版修复失效教训（PROJECT_MEMORY #36）:补初值代码里再拿 LVGL 锁,而 app_ui_init 全程由 main 持锁调用,自己等自己 200ms 超时后静默跳过——日志"nav ready"与"net state init"相差正好 200ms 即铁证;去掉多余拿锁后两行相差 1ms,用户确认开机无叹号 ✓。②**滑动卡片有概率死机**（用户报;修复后用户简单测试未复现,按通过处理,未做长时间压测）:时钟卡被滑走销毁后静态控件句柄悬空,home_cards_set_net 仍会写它——WiFi 连不上时每 2.4s 重试一次、每次发 NET_STATE,恰逢时钟卡不在槽即写已释放对象;修复=卡片注册表增 destroy 钩子,时钟卡销毁前清零句柄（仅当句柄确属被删卡片层,PROJECT_MEMORY #37）。③on_net_state 拿不到锁时不再静默丢弃,打 DROPPED 警告（遗留未做补送,PROJECT_MEMORY #34）。④已知未修:开机电量可能短暂显示红色 0%（上报早于界面订阅,≤5s 自愈;用户定暂不处理）。编译 ✓、烧录 COM9 ✓ |

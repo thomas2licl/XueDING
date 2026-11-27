@@ -85,7 +85,8 @@
 | 30 | 11-21 | sdkconfig sed 改了但数字不变 | sdkconfig 需 **reconfigure** 才进 sdkconfig.h,直接改 sdkconfig 后 `idf.py reconfigure` | 流程 |
 | 33 | 11-26 | esp_wifi_init 峰值凭记忆记成 51K/40K | 内存数字以水位探针实测为准:全链路峰值 25.1~28.6 KiB | 本节下文 |
 | 38 | 11-27 | 内部 RAM 吃紧,各任务栈（~15K）却全占内部 RAM | 任务栈可以搬去 PSRAM:`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`+`xTaskCreateStaticPinnedToCore` 实测可用（慢约 1%、切换无差别、不崩）;别的任务写 flash 时它只被暂停 ≤28ms,无恙（同日续测）;条件=本任务永不碰 flash 驱动（§1a）,且须定期让出 CPU（满负荷占核超 5s 会触发任务看门狗告警） | 进度 §6.8 实测记录 |
-| 39 | 11-27 | 写 flash 时屏幕正在从 PSRAM 往面板搬数据（DMA 缓冲在 PSRAM,与 flash 共用总线） | 实测相撞无害:传输不出错,被撞的帧慢约 26ms 后恢复,界面不卡不崩;无需"写 flash 前先让屏幕暂停"（花屏与否属目视项,用户尚未明确反馈） | 进度 §6.8 实测记录 |
+| 39 | 11-27 | 写 flash 时屏幕正在从 PSRAM 往面板搬数据（DMA 缓冲在 PSRAM,与 flash 共用总线） | 实测相撞无害:传输不出错,被撞的帧慢约 26ms 后恢复,界面不卡不崩;无需"写 flash 前先让屏幕暂停"（用户目视复核:无花屏、无黑屏、无重启） | 进度 §6.8 实测记录 |
+| 40 | 11-27 | 音频/语音哪些内存必须在内部 RAM（只查源码与官方文档,未上板） | ①I2S 驱动自己的 DMA 缓冲**只能内部 RAM**:驱动写死 INTERNAL+DMA（`i2s_private.h` 的 `I2S_DMA_ALLOC_CAPS`,无开关）,默认 6 段×240 帧,按位宽/声道约 3~6KB 一路,录音、播放各一套;交给 `i2s_channel_read/write` 的数据缓冲可放 PSRAM（驱动用 memcpy 搬运,`i2s_common.c:1382/1432`）。②ESP-SR 语音识别大头在 PSRAM,但另固定占内部 RAM 约 65~78KB（AFE 链 49~60KB + MultiNet 16~18KB;PSRAM 约 3.0~3.7MB）;TTS 运行时 RAM 20KB、flash 2.2MB。当前内部 RAM 只剩约 11~16KB:搬任务栈腾 13~16KB 不够,语音上板前还要再腾几十 KB | 官方 benchmark 文档（master）;IDF v5.5.4 esp_driver_i2s;进度 §6.1③ |
 
 **WiFi 内存全景（真机实测）**：
 - WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
