@@ -84,7 +84,8 @@
 | 29 | 11-21 | motion 栈砍 2KB 后溢出 | 3KB 是底线（IMU 读+浮点+LVGL 锁切旋转）,不动 | app_motion.c |
 | 30 | 11-21 | sdkconfig sed 改了但数字不变 | sdkconfig 需 **reconfigure** 才进 sdkconfig.h,直接改 sdkconfig 后 `idf.py reconfigure` | 流程 |
 | 33 | 11-26 | esp_wifi_init 峰值凭记忆记成 51K/40K | 内存数字以水位探针实测为准:全链路峰值 25.1~28.6 KiB | 本节下文 |
-| 38 | 11-27 | 内部 RAM 吃紧,各任务栈（~15K）却全占内部 RAM | 任务栈可以搬去 PSRAM:`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`+`xTaskCreateStaticPinnedToCore` 实测可用（慢约 1%、切换无差别、不崩）;条件=本任务永不碰 flash 驱动（§1a）,且须定期让出 CPU（满负荷占核超 5s 会触发任务看门狗告警） | 进度 §6.8 实测记录 |
+| 38 | 11-27 | 内部 RAM 吃紧,各任务栈（~15K）却全占内部 RAM | 任务栈可以搬去 PSRAM:`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`+`xTaskCreateStaticPinnedToCore` 实测可用（慢约 1%、切换无差别、不崩）;别的任务写 flash 时它只被暂停 ≤28ms,无恙（同日续测）;条件=本任务永不碰 flash 驱动（§1a）,且须定期让出 CPU（满负荷占核超 5s 会触发任务看门狗告警） | 进度 §6.8 实测记录 |
+| 39 | 11-27 | 写 flash 时屏幕正在从 PSRAM 往面板搬数据（DMA 缓冲在 PSRAM,与 flash 共用总线） | 实测相撞无害:传输不出错,被撞的帧慢约 26ms 后恢复,界面不卡不崩;无需"写 flash 前先让屏幕暂停"（花屏与否属目视项,用户尚未明确反馈） | 进度 §6.8 实测记录 |
 
 **WiFi 内存全景（真机实测）**：
 - WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
@@ -139,7 +140,7 @@ LWIP_TCPIP_TASK_STACK_SIZE=2048     # 3072→2048
 | **开机图已定稿** | `boot_logo.c` 用户实物素材（已裁装饰边）,勿改;换图方法见 AI 记忆/文件头注释 | 用户 2026-11-19 |
 | **WiFi=临时硬编码** | 当前 SSID/密码写死在 user_config.h（WIFI_TMP_*）,**只是对时临时方案**——正式配网（扫描/设置页/NVS 存储/SmartConfig 等）归 U8 天气阶段;用后即弃,勿在其上叠加正式功能 | 用户 2026-11-21 |
 | **公司电脑不留私人痕迹** | git 提交邮箱用 noreply 地址（历史已重写） | 项目惯例 |
-| **PSRAM 栈任务零 flash 驱动接触** | 工作台（栈）在 PSRAM 的任务不得调用任何会走到 flash 驱动的 API,`esp_flash_*`、`esp_partition_*`、NVS、文件系统,**读也不行**;读写设置交给内部栈任务,其缓冲也须在内部 RAM。依据是 flash 操作期间缓存关闭,PSRAM 与 flash 同不可访问。JS 方案脚本任务的硬约束 | ESP-IDF 官方文档 External RAM·限制;进度 §6.8 |
+| **PSRAM 栈任务零 flash 驱动接触** | 工作台（栈）在 PSRAM 的任务不得调用任何会走到 flash 驱动的 API,`esp_flash_*`、`esp_partition_*`、NVS、文件系统,**读也不行**;读写设置交给内部栈任务,其缓冲也须在内部 RAM。依据是 flash 操作期间缓存关闭,PSRAM 与 flash 同不可访问。JS 方案脚本任务的硬约束。2026-11-27 实测:"别的任务写 flash"对它无害（只被暂停 ≤28ms）;自己调未测,按文档禁止 | ESP-IDF 官方文档 External RAM·限制;进度 §6.8 |
 
 ---
 

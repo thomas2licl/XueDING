@@ -283,10 +283,10 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 **硬件回来后**（旧板 2026-11-23 送外测;2026-11-25 起已换用另一块板子继续开发,串口 COM9）
 - [x] 验收时钟卡网络图标修复：连 WiFi 后时钟槽切走再切回,叹号应保持消失（**2026-11-26 验收 ✓**;滑动场景本就正常,另查出并修复"开机即连 WiFi 时叹号常驻"与"滑动卡片有概率死机",见 §8）
 - [x] 读 app_net `heap[...]` 探针日志,校准 PROJECT_MEMORY WiFi 初始化峰值（51K/40K）与内部 RAM 总账（**2026-11-26 完成**:现板连上热点,四点齐全——before-init 38883 → after-init 15223 → start 最低 13167 → got-ip 最低 11231,全链路峰值 27652 字节=27.0 KiB;11-25 未连 WiFi 的两次为 29148~29320;51K/40K 不成立,实测已入 PROJECT_MEMORY;总账为估算、量级一致,未改）
-- [ ] **JS 方案生死线实验**：PSRAM 任务栈（xTaskCreateStatic+SPIRAM 栈缓冲）——①正常跑 **✅ 2026-11-27 实测通过** ③栈高水位与切换延迟 **✅ 已量**（同一份负载比内部栈慢约 1%、切换往返与内部栈无差别、不崩;数字与原始日志见 §6.8"实测记录"）②**未做:** **"零 flash 接触"纪律验证**（官方文档明确:PSRAM 栈任务自己调 flash/NVS 必崩;脚本任务设计为永不碰 flash,本项实测"其他任务写 flash 时本任务仅被中断"是否安全）;PSRAM 水位探针（MALLOC_CAP_SPIRAM）未加,加后把 PSRAM 余量变成精确数
-- [ ] JS 引擎 spike（栈实验通过才做——①③ 已通过,可以开工）：首选试官方组件 `makgordon/esp-mquickjs`（组件注册表现成,ESP32-S3 支持）;对照 QuickJS-NG（async/await 对 AI 生成友好,esp-mquickjs 功能子集待确认）;量基准/TLS 缓冲落点/GC 停顿
+- [ ] **JS 方案生死线实验**：PSRAM 任务栈（xTaskCreateStatic+SPIRAM 栈缓冲）——①正常跑 **✅ 2026-11-27 实测通过** ③栈高水位与切换延迟 **✅ 已量**（同一份负载比内部栈慢约 1%、切换往返与内部栈无差别、不崩;数字与原始日志见 §6.8"实测记录"）②**"零 flash 接触"纪律验证 ✅ 2026-11-27 实测通过**（"其他任务写 flash 时本任务仅被中断"属实:PSRAM 栈任务最长被停 28ms,数据与栈完好;顺带实测写 flash 撞上屏幕刷新也无害,见 §6.8。脚本任务设计为永不碰 flash;"自己调 flash/NVS 必崩"仍是官方文档结论,未实测）;PSRAM 水位探针（MALLOC_CAP_SPIRAM）未加,加后把 PSRAM 余量变成精确数
+- [ ] JS 引擎 spike（栈实验通过才做——①②③ 已通过,可以开工）：首选试官方组件 `makgordon/esp-mquickjs`（组件注册表现成,ESP32-S3 支持）;对照 QuickJS-NG（async/await 对 AI 生成友好,esp-mquickjs 功能子集待确认）;量基准/TLS 缓冲落点/GC 停顿
 - [ ] （不依赖板子）JS 卡片 API 契约文档：卡片 schema + native API 表 + net.fetch 护栏（max_bytes/timeout/限流）+ 凭证 NVS 按名引用 + 沙箱规则（零 flash 接触）+ 渲染分级
-- [ ] **XIP from PSRAM 验证**（前置的栈实验 ①③ 已通过）：开 `CONFIG_SPIRAM_XIP_FROM_PSRAM` 后,PSRAM 栈任务能否安全调用 flash 驱动（文档称写 flash 期间不关缓存）;量 PSRAM 多占多少、开机变慢多少。依据与风险见 §6.8
+- [ ] **XIP from PSRAM 验证**（前置的栈实验 ①②③ 已通过）：开 `CONFIG_SPIRAM_XIP_FROM_PSRAM` 后,PSRAM 栈任务能否安全调用 flash 驱动（文档称写 flash 期间不关缓存）;量 PSRAM 多占多少、开机变慢多少。依据与风险见 §6.8
 
 ### 6.7 旋转振荡 bug 档案（2026-11-14,记录在案暂不修）
 
@@ -388,7 +388,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 | 情形 | 结果 |
 |---|---|
 | PSRAM 栈任务自己运行 | 正常,flash 照读 |
-| 别的任务写 flash | 它被暂停数十毫秒后恢复,不受影响 |
+| 别的任务写 flash | 它被暂停数十毫秒后恢复,不受影响（**2026-11-27 实测 ✓**:最长被停 28ms,数据与栈完好） |
 | PSRAM 栈任务自己发起 flash 驱动调用 | 缓存关了,它用不了自己的栈,触发非法 cache 访问异常,必崩 |
 
 **设计纪律（JS 方案脚本任务）**
@@ -431,7 +431,29 @@ I (28061) psram_stack: [3] notify round-trip us (min/avg/max): PSRAM<->int 30/31
 - 中断处理跑在专用的内部 RAM 中断栈上（`port_IntStack`,每核 `CONFIG_FREERTOS_ISR_STACKSIZE=1536` 字=6KB）,不占被中断任务的栈——调用栈里中断帧在 0x3fcbaxxx,任务帧在各自的栈上（A 在 PSRAM、B 在内部 RAM）。
 - 测试任务优先级 2 连续占满 core 1 超过 5s,IDLE1 饿死 → 任务看门狗告警 2 次（未开 `CONFIG_ESP_TASK_WDT_PANIC`,只打印不复位,测试照常跑完）。是测试负载不让出 CPU 所致,与 PSRAM 栈无关;**正式脚本任务必须定期让出 CPU**。
 
-未测:②（其他任务写 flash 期间本任务是否只被暂停、停多久;测试代码里 `PST_TEST_FLASH=1` 可开,需 main 组件加 `spi_flash` 依赖）、④ XIP from PSRAM、PSRAM 水位探针。
+**② 的实测（2026-11-27 续;同一套存档代码,由内部栈任务 D 写 flash:擦除+写入分区表外空白扇区 0x00900000,每次读回核对）**
+
+| 写法 | 次数 | 单次耗时（擦+写） | PSRAM 栈任务 A | 界面 |
+|---|---|---|---|---|
+| 核 0 写,写时拿界面锁（屏幕暂停） | 5 | 18~23 ms | 最长被停 23 ms,数据一致,栈守卫完好 | 有响应 |
+| 核 1 写（与 A 同核）,写时拿界面锁 | 5 | 20~23 ms | 最长被停 25 ms,一致,完好 | 有响应 |
+| 核 0 写,不管屏幕（真实场景） | 3 | 21~22 ms | 最长被停 23 ms,一致,完好 | 有响应 |
+| 核 0 写,掐在界面正忙时写 | 5 遍 60 次:3 遍掐在界面刚开工,2 遍掐在帧的中段（确认撞上 5 次、8 次） | 19~30 ms | 最长被停 28 ms,一致,完好 | 有响应,不崩;被撞的帧 65~68 ms（平时 41） |
+
+- 结论:文档所说"别的任务写 flash,PSRAM 栈任务只是被暂停"属实,暂停时长≈那次 flash 操作的耗时;写完后它的数据与栈原样。
+- **写 flash 撞上屏幕刷新**:屏幕刷新的 DMA 缓冲在 PSRAM（`bsp_lcd.c` 的 `s_trans_buf`）,官方文档提醒二者共用总线。实测相撞后传输不出错,只是被撞的那一帧慢约 26ms,下一帧恢复,界面不卡死。其中一遍是用户正在滑页面（整页重绘）时写的,同样无事。花屏与否属目视项,**用户尚未明确反馈**;日志只能证明没崩、没卡、帧没丢。
+- 全天共七十多次擦写,读回核对全部一致,无崩溃、无看门狗、无报错。
+- 测试任务改为定期让出 CPU（每 2 万轮睡 1ms）后不再触发任务看门狗——上一轮的告警确系测试负载占满 core 1 所致。
+
+原始日志（三段版的三行 + 掐帧中段版的一行）:
+```
+I (31115) psram_stack: [2] phase 1/3: flash writer on core 0, screen paused during write | ops ok 5/5 (erase <= 17 ms, write <= 6 ms) | A paused <= 23 ms over 78 rounds | A data consistent | A stack guard intact | UI responsive
+I (34214) psram_stack: [2] phase 2/3: flash writer on core 1, screen paused during write | ops ok 5/5 (erase <= 17 ms, write <= 6 ms) | A paused <= 25 ms over 79 rounds | A data consistent | A stack guard intact | UI responsive
+I (36236) psram_stack: [2] phase 3/3: flash writer on core 0, screen NOT paused (real world) | ops ok 3/3 (erase <= 16 ms, write <= 7 ms) | A paused <= 23 ms over 47 rounds | A data consistent | A stack guard intact | UI responsive
+I (24566) psram_stack: [2] phase 1/1: flash writer on core 0, written mid-frame (forced collision with panel transfer) | ops ok 12/12 (erase <= 18 ms, write <= 7 ms), UI busy at start 12/12, mid-frame 8/12 | A paused <= 28 ms over 322 rounds | A data consistent | A stack guard intact | UI responsive
+```
+
+未测:④ XIP from PSRAM、PSRAM 水位探针;"PSRAM 栈任务自己调 flash 驱动必崩"按官方文档执行,未拿板子撞。
 
 **待实测：XIP from PSRAM**（`CONFIG_SPIRAM_XIP_FROM_PSRAM`,S3 上等于同时选 `SPIRAM_FETCH_INSTRUCTIONS` 和 `SPIRAM_RODATA`）：文档称指令和只读数据开机搬入 PSRAM 后,"写 flash 期间需要执行的代码不必放 IRAM"。若在本板属实,写 flash 期间可不关缓存,上面的约束随之解除;代价是 PSRAM 多占大约等于 .text 加 .rodata 的容量。**依据只有文档和 Kconfig 帮助原文,源码分支没读透,未实测**,列为 JS 实验第 ④ 项。
 
@@ -481,6 +503,7 @@ I (28061) psram_stack: [3] notify round-trip us (min/avg/max): PSRAM<->int 30/31
 
 | 日期 | 变更内容 |
 |------|----------|
+| 2026-11-27 | **生死线实验第 ② 项通过 + 写 flash 撞屏幕刷新实测（搬迁前第 1 步收官）**：用存档代码的内部栈任务写分区表外空白扇区（全天七十多次擦写,读回核对一致）——核 0 写、核 1 写、不管屏幕、掐在界面正忙时写四种写法下,PSRAM 栈任务最长被停 28ms,数据与栈守卫完好,界面不卡不崩。屏幕 DMA 缓冲在 PSRAM,与写 flash 相撞时传输不出错,被撞的帧慢约 26ms 后恢复（花屏与否待用户目视反馈）。数字与原始日志入 §6.8 实测记录;PROJECT_MEMORY #38 补充、新增 #39、§1a 补实测说明;测试代码已撤出固件并烧回干净固件,存档 `tools/experiments/psram_stack_test.c` 更新为实跑版本（含两种跑法开关） |
 | 2026-11-27 | **JS 方案生死线实验 ①③ 通过（PSRAM 任务栈可用）**：临时测试任务钉在 core 1、不耦合业务——PSRAM 栈任务（16KB）与内部栈对照任务跑同一份负载,结果逐位相同;负载耗时慢约 1%（7340/7315 vs 7269/7276 ms）,栈峰值 ~3.1KB,任务切换往返 30µs 与内部栈无差别,不崩、界面照常。看门狗告警 2 次系测试负载占满 core 1 饿死 IDLE1,与 PSRAM 栈无关。数字、原始日志与附带发现入 §6.8"实测记录",PROJECT_MEMORY 加 #38;②flash 并发、④XIP from PSRAM、PSRAM 水位探针未做。测试代码已从固件移除（重新编译烧录,开机日志干净）,源码存档 `tools/experiments/psram_stack_test.c` |
 | 2026-11-27 | **flash 操作与外部内存机制查证入档（§6.8,ESP32-S3 开发资产）**：JS 方案"生死线实验"动手前,用户逐轮追问把机制讨论透——写/擦 flash（及经 flash 驱动的读）期间两核缓存关闭,flash 与 PSRAM 同不可访问;PSRAM 栈任务不得调用任何走 flash 驱动的 API（读也不行）,别的任务写 flash 时它只是被暂停;flash 芯片无"XIP/写"模式切换。新增 §6.8 档案（速查表/五步机制/官方原文/源码出处）,PROJECT_MEMORY 关键约束增一行。**新发现**：`CONFIG_SPIRAM_XIP_FROM_PSRAM` 文档称可让写 flash 期间不关缓存,若属实则上述约束解除——未实测,列为 JS 实验第 ④ 项 |
 | 2026-11-26 | **时钟卡 WiFi 叹号开机常驻修复 + 滑动卡片死机修复（"硬件回来后"待办第 1 项收官）**：①**开机叹号**（用户报，验收 ✓）：开机日志定位 got ip 4.3s 早于 UI ready 5.4s,NET_STATE 无人订阅即丢失,s_wifi_ok 停在 false;修复=app_ui_init 订阅后调 `app_net_is_connected()` 补初值（app_ui 组件新增 app_net 依赖）。首版修复失效教训（PROJECT_MEMORY #36）:补初值代码里再拿 LVGL 锁,而 app_ui_init 全程由 main 持锁调用,自己等自己 200ms 超时后静默跳过——日志"nav ready"与"net state init"相差正好 200ms 即铁证;去掉多余拿锁后两行相差 1ms,用户确认开机无叹号 ✓。②**滑动卡片有概率死机**（用户报;修复后用户简单测试未复现,按通过处理,未做长时间压测）:时钟卡被滑走销毁后静态控件句柄悬空,home_cards_set_net 仍会写它——WiFi 连不上时每 2.4s 重试一次、每次发 NET_STATE,恰逢时钟卡不在槽即写已释放对象;修复=卡片注册表增 destroy 钩子,时钟卡销毁前清零句柄（仅当句柄确属被删卡片层,PROJECT_MEMORY #37）。③on_net_state 拿不到锁时不再静默丢弃,打 DROPPED 警告（遗留未做补送,PROJECT_MEMORY #34）。④已知未修:开机电量可能短暂显示红色 0%（上报早于界面订阅,≤5s 自愈;用户定暂不处理）。编译 ✓、烧录 COM9 ✓ |
