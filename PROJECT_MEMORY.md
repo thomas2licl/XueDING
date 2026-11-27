@@ -84,6 +84,7 @@
 | 29 | 11-21 | motion 栈砍 2KB 后溢出 | 3KB 是底线（IMU 读+浮点+LVGL 锁切旋转）,不动 | app_motion.c |
 | 30 | 11-21 | sdkconfig sed 改了但数字不变 | sdkconfig 需 **reconfigure** 才进 sdkconfig.h,直接改 sdkconfig 后 `idf.py reconfigure` | 流程 |
 | 33 | 11-26 | esp_wifi_init 峰值凭记忆记成 51K/40K | 内存数字以水位探针实测为准:全链路峰值 25.1~28.6 KiB | 本节下文 |
+| 38 | 11-27 | 内部 RAM 吃紧,各任务栈（~15K）却全占内部 RAM | 任务栈可以搬去 PSRAM:`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`+`xTaskCreateStaticPinnedToCore` 实测可用（慢约 1%、切换无差别、不崩）;条件=本任务永不碰 flash 驱动（§1a）,且须定期让出 CPU（满负荷占核超 5s 会触发任务看门狗告警） | 进度 §6.8 实测记录 |
 
 **WiFi 内存全景（真机实测）**：
 - WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
