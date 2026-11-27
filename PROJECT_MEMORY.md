@@ -138,6 +138,7 @@ LWIP_TCPIP_TASK_STACK_SIZE=2048     # 3072→2048
 | **开机图已定稿** | `boot_logo.c` 用户实物素材（已裁装饰边）,勿改;换图方法见 AI 记忆/文件头注释 | 用户 2026-11-19 |
 | **WiFi=临时硬编码** | 当前 SSID/密码写死在 user_config.h（WIFI_TMP_*）,**只是对时临时方案**——正式配网（扫描/设置页/NVS 存储/SmartConfig 等）归 U8 天气阶段;用后即弃,勿在其上叠加正式功能 | 用户 2026-11-21 |
 | **公司电脑不留私人痕迹** | git 提交邮箱用 noreply 地址（历史已重写） | 项目惯例 |
+| **PSRAM 栈任务零 flash 驱动接触** | 工作台（栈）在 PSRAM 的任务不得调用任何会走到 flash 驱动的 API,`esp_flash_*`、`esp_partition_*`、NVS、文件系统,**读也不行**;读写设置交给内部栈任务,其缓冲也须在内部 RAM。依据是 flash 操作期间缓存关闭,PSRAM 与 flash 同不可访问。JS 方案脚本任务的硬约束 | ESP-IDF 官方文档 External RAM·限制;进度 §6.8 |
 
 ---
 

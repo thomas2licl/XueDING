@@ -355,6 +355,63 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 | 2 | **MADCTL 硬件旋转**（`esp_lcd_panel_swap_xy/mirror`） | 未实验;驱动 init 的 MADCTL=0x00 已生效（颜色正确可证）,加 MV/MX bit 大概率生效 | LVGL 直接逻辑横屏渲染,零软件旋转,flush 只剩 DMA |
 | — | 实验纪律 | — | 均改 managed_components 驱动,代码须标注"LocalLife 实验"注释,失败即回退（git 可追溯） |
 
+### 6.8 flash 操作与外部内存机制查证档案（PSRAM 任务栈约束，2026-11-27）
+
+> 起因：JS 方案"生死线实验"（§6.2）要把任务栈放到 PSRAM。本档是动手前对底层机制的查证与讨论定稿,可作 ESP32-S3 平台的开发资产复用。来源：ESP-IDF v5.5.4 本机文档与源码（见文末）。
+
+**一句话结论**：写/擦 flash（以及经 flash 驱动的读）期间缓存被关,flash 与 PSRAM 同时不可访问。工作台（栈）在 PSRAM 的任务**不得调用任何会走到 flash 驱动的 API,读也不行**;其余照常。
+
+**速查表**
+
+| 动作 | 是否关缓存 | PSRAM 栈任务 |
+|---|---|---|
+| CPU 直接读指令、读常量（映射在地址空间里的 flash 内容） | 否 | 可以 |
+| CPU 读写 PSRAM 数据（缓存开着时） | 否 | 可以 |
+| 经驱动读写 flash（`esp_flash_read/write/erase`、`esp_partition_*`） | 是 | **禁止** |
+| NVS、文件系统、分区读写（底层同上） | 是 | **禁止** |
+
+**机制（双核）**
+
+- 平时：指令缓存和数据缓存都开着,指令、常量、PSRAM 数据都经缓存访问,各任务正常调度。
+- 写 flash 时（`spi_flash_disable_interrupts_caches_and_other_cpu()`）：
+  1. 关中断、停调度,经 IPC 通知另一核执行 `spi_flash_op_block_func`（同样停调度）
+  2. 两核缓存关闭
+  3. 位于内部 RAM 的驱动用 SPI1 给 flash 芯片发命令：写使能 → 擦除/页编程 → 轮询到芯片空闲
+  4. 恢复缓存
+  5. 恢复调度
+- 期间整机冻结,界面刷新也停。现有固件存闹钟（NVS 写）时本就如此。
+- flash 芯片没有"XIP 模式/写模式"的切换。XIP 是"CPU 经缓存直接读 flash 来执行"这种用法;切换的是 CPU 一侧的"缓存开/关"和"谁对 flash 芯片发命令"。
+
+**三类情形**
+
+| 情形 | 结果 |
+|---|---|
+| PSRAM 栈任务自己运行 | 正常,flash 照读 |
+| 别的任务写 flash | 它被暂停数十毫秒后恢复,不受影响 |
+| PSRAM 栈任务自己发起 flash 驱动调用 | 缓存关了,它用不了自己的栈,触发非法 cache 访问异常,必崩 |
+
+**设计纪律（JS 方案脚本任务）**
+
+- 脚本任务（PSRAM 栈）只做计算和绘制。读写设置、存文件交给**内部栈**的 C 任务,该任务交给驱动的缓冲区也必须在内部 RAM。
+- 日志可用：ESP_LOG 走 UART,不写 flash（见 §8 的 11-23 行）。
+
+**官方原文**（`docs/zh_CN/api-guides/external-ram.rst`"使用片外 RAM 有下面一些限制",英文版同）
+
+- "片外 RAM 与片外 flash 使用相同的 cache 区域"
+- "flash cache 禁用时（比如，正在写入 flash），片外 RAM 将无法访问；同样，对片外 RAM 的读写操作也将导致 cache 访问异常。因此，ESP-IDF 不会在片外 RAM 中分配任务堆栈"
+- "一般来说，片外 RAM 不会用作任务堆栈存储器。xTaskCreate 及类似函数始终会为堆栈和任务 TCB 分配片上储存器。可以使用 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM 选项将任务堆栈放入片外存储器。这时，必须使用 xTaskCreateStatic 指定从片外存储器分配的任务堆栈缓冲区"
+- S3 另注："DMA 事务描述符不能放在 PSRAM 中""DMA 访问片外 RAM 的带宽非常有限"
+
+**本工程现状**：sdkconfig 里 `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已默认开启（旧名 `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`,已改名）,但现有任务栈全部在内部 RAM,代码中没有 `xTaskCreateStatic`。PSRAM 目前只放 LVGL 渲染缓冲和 DMA 中转缓冲。
+
+**待实测：XIP from PSRAM**（`CONFIG_SPIRAM_XIP_FROM_PSRAM`,S3 上等于同时选 `SPIRAM_FETCH_INSTRUCTIONS` 和 `SPIRAM_RODATA`）：文档称指令和只读数据开机搬入 PSRAM 后,"写 flash 期间需要执行的代码不必放 IRAM"。若在本板属实,写 flash 期间可不关缓存,上面的约束随之解除;代价是 PSRAM 多占大约等于 .text 加 .rodata 的容量。**依据只有文档和 Kconfig 帮助原文,源码分支没读透,未实测**,列为 JS 实验第 ④ 项。
+
+**来源**（根路径 `E:\espressif\.espressif\v5.5.4\esp-idf`）
+
+- 文档：`docs/zh_CN/api-guides/external-ram.rst`、`docs/en/api-guides/external-ram.rst`（"限制""Execute In Place (XiP) from PSRAM"）
+- Kconfig：`components/esp_psram/esp32s3/Kconfig.spiram`
+- 源码：`components/spi_flash/cache_utils.c`（`spi_flash_disable_interrupts_caches_and_other_cpu`、`spi_flash_op_block_func`;另有注释点明两核的 flash cache 各自独立,但 PSRAM cache 是共用的）
+
 ---
 
 ## 7. 开发规范
@@ -395,6 +452,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 
 | 日期 | 变更内容 |
 |------|----------|
+| 2026-11-27 | **flash 操作与外部内存机制查证入档（§6.8,ESP32-S3 开发资产）**：JS 方案"生死线实验"动手前,用户逐轮追问把机制讨论透——写/擦 flash（及经 flash 驱动的读）期间两核缓存关闭,flash 与 PSRAM 同不可访问;PSRAM 栈任务不得调用任何走 flash 驱动的 API（读也不行）,别的任务写 flash 时它只是被暂停;flash 芯片无"XIP/写"模式切换。新增 §6.8 档案（速查表/五步机制/官方原文/源码出处）,PROJECT_MEMORY 关键约束增一行。**新发现**：`CONFIG_SPIRAM_XIP_FROM_PSRAM` 文档称可让写 flash 期间不关缓存,若属实则上述约束解除——未实测,列为 JS 实验第 ④ 项 |
 | 2026-11-26 | **时钟卡 WiFi 叹号开机常驻修复 + 滑动卡片死机修复（"硬件回来后"待办第 1 项收官）**：①**开机叹号**（用户报，验收 ✓）：开机日志定位 got ip 4.3s 早于 UI ready 5.4s,NET_STATE 无人订阅即丢失,s_wifi_ok 停在 false;修复=app_ui_init 订阅后调 `app_net_is_connected()` 补初值（app_ui 组件新增 app_net 依赖）。首版修复失效教训（PROJECT_MEMORY #36）:补初值代码里再拿 LVGL 锁,而 app_ui_init 全程由 main 持锁调用,自己等自己 200ms 超时后静默跳过——日志"nav ready"与"net state init"相差正好 200ms 即铁证;去掉多余拿锁后两行相差 1ms,用户确认开机无叹号 ✓。②**滑动卡片有概率死机**（用户报;修复后用户简单测试未复现,按通过处理,未做长时间压测）:时钟卡被滑走销毁后静态控件句柄悬空,home_cards_set_net 仍会写它——WiFi 连不上时每 2.4s 重试一次、每次发 NET_STATE,恰逢时钟卡不在槽即写已释放对象;修复=卡片注册表增 destroy 钩子,时钟卡销毁前清零句柄（仅当句柄确属被删卡片层,PROJECT_MEMORY #37）。③on_net_state 拿不到锁时不再静默丢弃,打 DROPPED 警告（遗留未做补送,PROJECT_MEMORY #34）。④已知未修:开机电量可能短暂显示红色 0%（上报早于界面订阅,≤5s 自愈;用户定暂不处理）。编译 ✓、烧录 COM9 ✓ |
 | 2026-11-26 | **内存水位探针校准档案（"硬件回来后"待办第 2 项收官）**：现板连上临时热点,四点齐全——before-init internal=38883 → after-init 15223（init 占 23660,无更深瞬时下探）→ start 最低 13167 → got-ip 最低 11231、回升至 16495;全链路峰值=27652 字节（27.0 KiB）,11-25 未连 WiFi 的两次为 29148~29320（28.5~28.6 KiB）——**记忆值 51K/40K 不成立**。发现:init 占用在启动间相差 3432 字节,原因未查。PROJECT_MEMORY"WiFi 内存全景"增实测一条+索引 #33;§6.2 该项勾销。另:SNTP 对时在现板全通;打开 COM9 会使板子复位（USB_UART_CHIP_RESET） |
 | 2026-11-26 | **收工自查补账（11-25 自查结果当日未报出）**：逐文档核对 11-25 的阈值调整/换板/串口/代理——需求 §1、交互规范 §八、UI 跟踪仅文字描述、不涉数值，无需改；补齐 3 处不一致：①架构任务模型表 `motion_task` 行按实现更正（200ms 轮询/栈 3KB，原写"中断驱动/4KB"，S1.5 起的偏差）；②架构风险表 ② 补实况（无滞回区间、阈值 0.50g、零偏余量，指向 PROJECT_MEMORY #31）；③§6.2"硬件回来后"小节标注 11-25 起换板开发，并记入现板内存探针 3/4 点读数（峰值≈29KB，缺 got-ip，未校准档案）。架构文档不升版本（属更正，非设计变更）；§6.6 标题的串口标注经用户确认不做 |
