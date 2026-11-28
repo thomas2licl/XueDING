@@ -81,7 +81,7 @@ clone 后**无需联网即可构建**；对 LVGL 的二次开发（改 demo、�
 （Bypass 过执行策略 + Remove-Item Env:MSYSTEM 过环境检查;`env -u MSYSTEM` 对该变量无效）。
 另：**烧录偶发 "Could not open COM4, port busy"**（无占用进程,原因未查,2026-11-19 出现 3 次）——直接重试即过,勿排查。
 COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片）——日志+烧录+JTAG 三合一,任意串口终端（PuTTY 等）可直看日志,详见 §6.6 档案。
-**当前串口 COM9**（2026-11-25 换板后;旧板为 COM4）——烧录 `idf.py -p COM9 flash`;非交互抓日志可用 PowerShell `System.IO.Ports.SerialPort` 打开 COM9 读 N 秒（app 日志在该口可见）;打开串口会使板子复位（USB_UART_CHIP_RESET）,抓到的是从启动起的完整日志。
+**当前串口 COM9**（2026-11-25 换板后;旧板为 COM4）——烧录 `idf.py -p COM9 flash`;非交互抓日志可用 PowerShell `System.IO.Ports.SerialPort` 打开 COM9 读 N 秒（app 日志在该口可见）;打开串口不会使板子复位;要看开机日志须手动复位（串口 RTS 置位 200ms 再放开）,且复位后 USB 重新枚举,头 1~2 秒的日志会丢,关键读数应延后转存打印（2026-11-27/28 实测）。
 **git push/fetch 直连 github.com 443 超时**（2026-11-25）：git 不读 Windows 系统代理——push 加 `-c http.proxy=http://127.0.0.1:7897`（系统代理端口,仅本次命令生效,未写入 git 配置）。
 
 ---
@@ -146,7 +146,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 - **LVGL 逻辑横屏 640×172**：`lv_display_create(172, 640)` + `set_rotation(90/270)`，DIRECT **单**全帧 PSRAM 渲染缓冲（2026-11-20 定稿,原双缓冲 sync 漏拷根治,档案 §6.3）
 - **开机启动时序（V0.7）**：LVGL 初始化前先向面板直发全屏黑色（物理坐标顺序刷,~50ms）→ 再点亮背光（防开机花屏）。**时间线**：无开机图时"纯黑亮起 → 0.2~0.5s（LVGL 首帧+组件装配）→ 直接主界面"（设计行为,无闪烁）；有开机图时"纯黑亮起 → 数百 ms 内开机图出现 → 停留 3s → 主界面"。开机图接口在 app_ui（`BOOT_LOGO_ENABLE`/`BOOT_LOGO_IMG`,素材 640×172 横屏/RGB565/小端 C 数组 ~214KB,经 LVGL 管线自动旋转+字节序处理,当前 0 跳过）
 - **驱动契约（硬约束）**：AXS15231B QSPI 的 `draw_bitmap` 只支持"从 y=0 起、块间连续的顺序流式写"（RASET 实测无效、y>0 为 0x3C 续写）——任意脏区直写会花屏。驱动源码已加注释
-- **flush 前缀刷**：从物理块 0 顺序刷到**最深块（2026-11-20 起两方向统一全量 10 块,消除 270 短前缀行为不对称,§6.3）**；每块做 tile 旋转（16×16 转置，源行连续读、目标写 DMA RAM，顺带 RGB565 大端交换——绝不能原地改渲染缓冲,它是 LVGL 的渲染目标本体）；双 DMA 缓冲乒乓，旋转与传输重叠。实测从整帧 PSRAM 旋转 148ms/帧 优化到 ~20ms/帧
+- **flush 前缀刷**：从物理块 0 顺序刷到**最深块（2026-11-20 起两方向统一全量 10 块,消除 270 短前缀行为不对称,§6.3）**；每块做 tile 旋转（16×16 转置，源行连续读、目标写 PSRAM 中转缓冲，顺带 RGB565 大端交换——绝不能原地改渲染缓冲,它是 LVGL 的渲染目标本体）；双缓冲乒乓（两块 22KB 中转缓冲 2026-11-21 起在 PSRAM;但 esp_lcd 发送时 SPI 驱动仍在内部 RAM 中转 22.5KB,见 §6.9），旋转与传输重叠。早期实测从整帧 PSRAM 旋转 148ms/帧 优化到 ~20ms/帧;**2026-11-28 实测每帧约 38ms**（每次都发全部 10 块）
 - **触摸**：read_cb 供**物理面板坐标** `ph=(ty, 639-tx)`（四角实测标定，USB-左横拿恒成立），LVGL 的 `lv_display_rotate_point` 自动转逻辑坐标（`lv_indev.c:743`）
 - **LVGL 集成要点**：屏上 perf monitor 已关（空载自刷新循环根源，性能观测用串口 `flush perf`）；screen 禁滚动；控件加 EVENT_BUBBLE
 - **任务模型**：LVGL 任务固定 10ms 轮询（勿用 handler 返回值做睡眠——静态界面下会睡数百 ms 造成点击迟钝），锁互斥量，pinned core 0
@@ -162,12 +162,12 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 | 3 | LocalLife 需求文档 | ✅ 完成 | 2026-11-10 | `需求/需求文档.md`；V0.1 迭代至今 **V0.9**（横屏+IMU/小夜灯/今昨对比+穿衣/电源电池/功耗+沙漏/开机体验/夜间模式/**横滑导航+闹钟 4 档**/**沙漏翻转+沙量定稿**） |
 | 4 | 编译 + 烧录验证例程跑通 | ✅ 完成 | 2026-11-10 | 编译 + 烧录 + 屏显/触摸验证通过（widgets demo）；profile 页已个性化 |
 | 5 | 软件架构设计（本地优先、模块化） | ✅ 完成 | 2026-11-10 | `设计/软件架构设计.md` 现 **V0.9**（随实现迭代：功耗/沙漏/横滑导航/U5 实装/三槽卡片同步），调整按变更记录 |
-| 6 | 关键技术预研 | 🔶 进行中 | | 2026-11-10 完成音频硬件/音频链路/ESP-SR/TTS 四项（结论见 §6.1），全部可行；2026-11-21 完成 **SNTP+WiFi STA**（临时硬编码热点,全链路通）;剩余：和风天气 API、BLE 传图 |
+| 6 | 关键技术预研 | 🔶 进行中 | | 2026-11-10 完成音频硬件/音频链路/ESP-SR/TTS 四项（结论见 §6.1），全部可行；2026-11-21 完成 **SNTP+WiFi STA**（临时硬编码热点,全链路通）;2026-11-27 PSRAM 任务栈实验 ①②③ 通过（§6.8）;2026-11-28 内部 SRAM 摸底 + 省内存方案（§6.9）;剩余：和风天气 API、BLE 传图 |
 | 7 | 智能时钟 + 闹钟（核心，离线可用） | ✅ 完成 | 2026-11-18 | S2 五项收官（S2.1~2.5）：PCF85063 驱动/app_clock/app_alarm(NVS)/主页 v1/**断电走时实测 ✓**;SNTP 对时归联网阶段;夜间时钟模式归 #13 |
 | 8 | 声音中心（白噪音/助眠/专注） | ⬜ 未开始 | | 依赖音频链路预研结论 |
 | 9 | 天气助手（和风天气 + 通勤提醒） | ⬜ 未开始 | | 依赖 WiFi；含地点管理与缓存策略 |
 | 10 | 提醒事项（语音/触摸创建） | ⬜ 未开始 | | |
-| 11 | 语音助手（唤醒词 + 命令词 + TTS 播报） | ⬜ 未开始 | | 依赖预研结论；与各模块联动 |
+| 11 | 语音助手（唤醒词 + 命令词 + TTS 播报） | ⬜ 未开始 | | 依赖预研结论与**内部 RAM 腾挪**（§6.9:现稳态余量仅 ~15KB,语音另需内部 65~78KB）;与各模块联动 |
 | 12 | 图片相册（同步 + 轮播） | ⬜ 未开始 | | BLE 手机端方案待定，可先 SD 卡导入 |
 | 13 | 氛围灯与夜间模式、场景联动 | ⬜ 未开始 | | 早晨/专注/睡眠三场景;依赖 #14 背光调光实验 |
 | 14 | **UI 框架与页面（U 系列,2026-11-19 新设）** | 🔶 进行中 | | 单一事实源 `UI设计开发跟踪.md`;已完成 U1 横滑导航/U2 中文字体/U3 主页三槽卡片(架构)/U4 闹钟页（含二级页机制）/U5 沙漏页（翻转启动+重来）;U3a 进行中（时钟/倒计时卡已定稿,天气/提醒待设计）;剩 U6~U13 |
@@ -190,7 +190,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 | S1.4 | app_event 事件总线（20 事件）+ 13 个功能/平台组件空壳 + 横屏验证页装配 | ✅ | 60dadd0 |
 | S1.5 | bsp_imu（QMI8658 纯 C 驱动）+ app_motion 方向自适应（轴映射实测标定：长边∥Y 轴，ay>0→90） | ✅ | 31c5113 |
 | S1.6 | bsp_power：电池电量 ADC / 供电检测 / SYS_EN 自锁 / 电源键 + LL_EV_BATTERY_STATE 上总线 | ✅ 2026-11-13（电池到手恢复）：S1.6.1 bsp_power 驱动（VBAT ADC@GPIO4 分压 1/3、衰减 6dB、eFuse 校准;KEY1@GPIO16 长按 2s 关机）/ S1.6.2 可调电源九点标定（系数 1008,±12mV）/ S1.6.3 app_power（5s 采集+10 档查表+事件,开机 1s 首检）/ S1.6.4 电池模式实操验证 ✓ / S1.6.5 充电检测（初版 STAT 飞线,**S1.6.6 弃用改纯软件**）/ S1.6.6 充电检测改**电压沿检测**（2026-11-14,用户方案）：插 USB 瞬间充电电流抬升端电压 +0.1V 级、拔出瞬间回落、正常放电缓变（≤2mV/5s）——沿检测区分插拔事件,零硬件依赖;STAT 飞线（GPIO5）从代码移除（线上存量可不拆）;**不做 STAT 协同**（用户决策,单一路径纯软件推断） | 见下 |
-| S1.7 | 烧录验证 + 方向/触摸校准（显示管线定稿：前缀刷 + tile 旋转 + 乒乓 DMA，~20ms/帧） | ✅ | 0235815 |
+| S1.7 | 烧录验证 + 方向/触摸校准（显示管线定稿：前缀刷 + tile 旋转 + 乒乓 DMA，~20ms/帧;2026-11-28 复测约 38ms/帧,§6.9） | ✅ | 0235815 |
 
 > S1 收官遗留：①"断电后 RTC 走时"实测（风险⑮,不需电池——PCF85063 设时后拔电重连看走时）并入 S2 时钟阶段一并验证。
 
@@ -279,14 +279,16 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 - [x] S2 真实 UI（按钮/列表）交互跟手验收（S2.4 闹钟 STOP 按钮/U4 闹钟列表开关滚轮/U5 沙漏全交互真机验收 ✓,无迟滞）
 - [ ] bootloader 期花屏的软件根治（定制 bootloader 覆盖 `bootloader_after_init` 钩子,寄存器级拉低 IO42）——若已飞线（§6.5 方案 A）则优先级低
 - [x] 诊断页 ROT 按钮移除（S2.4 随诊断页退役一并完成,§6.7 振荡 bug 随之消灭）
+- [ ] 空闲时页点区域每秒约 3 帧重绘（`flush perf` 的脏区固定为 `dirty(270,160 369,163)`）,原因未查——按"页点 3s 无操作淡出"的设计,此时不应持续重绘（2026-11-28 实测,见 §6.9）
 
 **硬件回来后**（旧板 2026-11-23 送外测;2026-11-25 起已换用另一块板子继续开发,串口 COM9）
 - [x] 验收时钟卡网络图标修复：连 WiFi 后时钟槽切走再切回,叹号应保持消失（**2026-11-26 验收 ✓**;滑动场景本就正常,另查出并修复"开机即连 WiFi 时叹号常驻"与"滑动卡片有概率死机",见 §8）
-- [x] 读 app_net `heap[...]` 探针日志,校准 PROJECT_MEMORY WiFi 初始化峰值（51K/40K）与内部 RAM 总账（**2026-11-26 完成**:现板连上热点,四点齐全——before-init 38883 → after-init 15223 → start 最低 13167 → got-ip 最低 11231,全链路峰值 27652 字节=27.0 KiB;11-25 未连 WiFi 的两次为 29148~29320;51K/40K 不成立,实测已入 PROJECT_MEMORY;总账为估算、量级一致,未改）
+- [x] 读 app_net `heap[...]` 探针日志,校准 PROJECT_MEMORY WiFi 初始化峰值（51K/40K）与内部 RAM 总账（**2026-11-26 完成**:现板连上热点,四点齐全——before-init 38883 → after-init 15223 → start 最低 13167 → got-ip 最低 11231,全链路峰值 27652 字节=27.0 KiB;11-25 未连 WiFi 的两次为 29148~29320;51K/40K 不成立,实测已入 PROJECT_MEMORY;总账当时为估算未改,**2026-11-28 已按阶段实测重做,见 §6.9**）
 - [ ] **JS 方案生死线实验**：PSRAM 任务栈（xTaskCreateStatic+SPIRAM 栈缓冲）——①正常跑 **✅ 2026-11-27 实测通过** ③栈高水位与切换延迟 **✅ 已量**（同一份负载比内部栈慢约 1%、切换往返与内部栈无差别、不崩;数字与原始日志见 §6.8"实测记录"）②**"零 flash 接触"纪律验证 ✅ 2026-11-27 实测通过**（"其他任务写 flash 时本任务仅被中断"属实:PSRAM 栈任务最长被停 28ms,数据与栈完好;顺带实测写 flash 撞上屏幕刷新也无害,见 §6.8。脚本任务设计为永不碰 flash;"自己调 flash/NVS 必崩"仍是官方文档结论,未实测）;PSRAM 水位探针（MALLOC_CAP_SPIRAM）未加,加后把 PSRAM 余量变成精确数
 - [ ] JS 引擎 spike（栈实验通过才做——①②③ 已通过,可以开工）：首选试官方组件 `makgordon/esp-mquickjs`（组件注册表现成,ESP32-S3 支持）;对照 QuickJS-NG（async/await 对 AI 生成友好,esp-mquickjs 功能子集待确认）;量基准/TLS 缓冲落点/GC 停顿
 - [ ] （不依赖板子）JS 卡片 API 契约文档：卡片 schema + native API 表 + net.fetch 护栏（max_bytes/timeout/限流）+ 凭证 NVS 按名引用 + 沙箱规则（零 flash 接触）+ 渲染分级
 - [ ] **XIP from PSRAM 验证**（前置的栈实验 ①②③ 已通过）：开 `CONFIG_SPIRAM_XIP_FROM_PSRAM` 后,PSRAM 栈任务能否安全调用 flash 驱动（文档称写 flash 期间不关缓存）;量 PSRAM 多占多少、开机变慢多少。依据与风险见 §6.8
+- [ ] **为语音腾内部 RAM**（2026-11-28 摸底:稳态余量 15KB、最大连续块 10KB,而语音需内部 65~78KB）:五项做法与估算见 §6.9"三、下一步";每项改完上板对比余量、刷新和显示
 
 ### 6.7 旋转振荡 bug 档案（2026-11-14,记录在案暂不修）
 
@@ -340,7 +342,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 3. 厂商 demo 正常的原因：FULL 模式每帧恰好从 y=0 顺序刷 10 块,天然满足流式契约（属侥幸规避,非驱动能力）
 4. 排查方法论（可复用）：绕过 LVGL 的**直发自检图案二分法**（黑屏顺序刷 + 指定窗口点色,观察落点）——一次烧录即可判定驱动窗口写行为,成本最低的硬件行为探测手段
 
-**当前折中方案（已定稿,见 §4 显示管线）**：前缀刷——从物理块 0 顺序刷到覆盖脏区的最深块 + tile 旋转 + 乒乓 DMA,~20ms/帧（≈50fps）,动画需求实质无损,只是"只传变化条带"的理想方案落空。
+**当前折中方案（已定稿,见 §4 显示管线）**：前缀刷——从物理块 0 顺序刷到覆盖脏区的最深块 + tile 旋转 + 乒乓 DMA,~20ms/帧（≈50fps）,动画需求实质无损;**2026-11-20 起改为两方向统一全量 10 块,2026-11-28 实测约 38ms/帧**（见 §4、§6.9）,只是"只传变化条带"的理想方案落空。
 
 **2026-11-20 增补：渲染缓冲改单缓冲 + 前缀刷统一全量**（U5 沙漏页闪烁排查的成果）：
 - **双缓冲 DIRECT 的 `sync_areas` 跨缓冲同步在特定脏区组合下漏拷**（lv_refr.c 的 lv_area_diff 边界,全屏区减小区场景）→ 另一块缓冲残留陈旧像素 → 被前缀刷发上屏 = **沙漏启动随机闪旧沙型**（90/270 均可复现;按区前缀时仅 270 闪,统一全量后 90 也闪——该现象差异正是定位线索）。
@@ -403,7 +405,7 @@ COM 口：本板 USB 直连 S3 的 USB-Serial-JTAG（GPIO19/20,无桥接芯片�
 - "一般来说，片外 RAM 不会用作任务堆栈存储器。xTaskCreate 及类似函数始终会为堆栈和任务 TCB 分配片上储存器。可以使用 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM 选项将任务堆栈放入片外存储器。这时，必须使用 xTaskCreateStatic 指定从片外存储器分配的任务堆栈缓冲区"
 - S3 另注："DMA 事务描述符不能放在 PSRAM 中""DMA 访问片外 RAM 的带宽非常有限"
 
-**本工程现状**：sdkconfig 里 `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已默认开启（旧名 `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`,已改名）,但现有任务栈全部在内部 RAM,代码中没有 `xTaskCreateStatic`。PSRAM 目前只放 LVGL 渲染缓冲和 DMA 中转缓冲。
+**本工程现状**：sdkconfig 里 `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` 已默认开启（旧名 `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`,已改名）,但现有任务栈全部在内部 RAM,代码中没有 `xTaskCreateStatic`。PSRAM 目前只放 LVGL 渲染缓冲和 DMA 中转缓冲（发送时 SPI 驱动仍在内部 RAM 中转 22.5KB,见 §6.9）。
 
 **实测记录（2026-11-27,本板 COM9;测试代码已撤出固件,源码存档 `tools/experiments/psram_stack_test.c`,不参与编译）**
 
@@ -463,6 +465,168 @@ I (24566) psram_stack: [2] phase 1/1: flash writer on core 0, written mid-frame 
 - Kconfig：`components/esp_psram/esp32s3/Kconfig.spiram`
 - 源码：`components/spi_flash/cache_utils.c`（`spi_flash_disable_interrupts_caches_and_other_cpu`、`spi_flash_op_block_func`;另有注释点明两核的 flash cache 各自独立,但 PSRAM cache 是共用的）
 
+### 6.9 内部 SRAM 摸底与省内存方案档案（2026-11-28）
+
+**起因**：离线语音识别除 PSRAM 外另需内部 RAM 约 65~78KB（§6.1③）,而内部余量只有十几 KB。本节先从 map 文件和源码查内部 SRAM 的去向,再上板量基线,为语音功能腾内部 RAM 做准备。**本节只是摸底,没有改任何正式代码或配置**（探针为临时代码,量完已撤,固件已还原）。
+
+**一、静态排查（`build/10_LVGL_V9_Test.map` + 源码）**
+
+内部 512KB 的分法:
+
+| 区域 | 大小 | 主要构成 |
+|---|---|---|
+| 指令区 IRAM | 204KB | **LVGL 103KB**（`CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y`,其中软件混合函数约 99KB）;WiFi 和射频约 24KB;其余系统必需约 77KB |
+| 静态数据 .data+.bss | 136KB | **LVGL 内存池 64KB**（`work_mem_int`,静态数组）;**沙漏页画布 32KB**（`ui_page_hourglass.c` 的 `s_canvas_buf`,120×136×2）;其余约 39KB |
+| 堆 | 链接口径 116KB（PROJECT_MEMORY 账本） | `app_main` 开始时实测空闲 98,403 字节,去向见"二" |
+
+- 指令区和堆是同一块物理 SRAM,指令区每少 1 字节,堆就多 1 字节。依据:S3 链接脚本 `components/esp_system/ld/esp32s3/sections.ld.in` 原话 "iram0_0_seg and dram0_0_seg reflect the same address space on different buses"。
+- LVGL 的 103KB 按颜色格式拆:ARGB8888 20.2KB、RGB565_SWAPPED 12.3KB、RGB565 11.5KB、ARGB8888_PREMULTIPLIED 11.5KB、AL88 11.4KB、I1 10.1KB、RGB888 与 XRGB8888 9.8KB、L8 7.3KB、A8 2.4KB,其余约 4.6KB。本工程的图片、画布、字体只用 RGB565。
+- **必须保留**的颜色格式开关:RGB565（屏幕）、ARGB8888（控件透明或变换时 LVGL 用它做中间层）、RGB565A8（图片旋转缩放）、A8（阴影模糊）。字体是当蒙版画的,不依赖 A8 目标格式。
+
+可省项（估算;除"屏幕 SPI 中转块"和任务栈水位外均未改未测）:
+
+| 项目 | 约省 | 做法 | 依据 |
+|---|---|---|---|
+| LVGL 用不到的颜色格式移出 IRAM | 62KB | `sdkconfig.defaults` 关 7 个 `CONFIG_LV_DRAW_SW_SUPPORT_*`（RGB565_SWAPPED、RGB888、XRGB8888、ARGB8888_PREMULTIPLIED、L8、AL88、I1） | map 推算 |
+| LVGL 64KB 内存池搬 PSRAM | 56~62KB | 静态池缩到最小,`lv_init()` 后 `lv_mem_add_pool()` 挂 PSRAM 池;须调大 `LV_MEM_POOL_EXPAND_SIZE_KILOBYTES`（单池上限受它约束） | 实测池只用 24.7~30.3KB;性能未测 |
+| 沙漏页画布搬 PSRAM | 32KB | `s_canvas_buf` 改运行时 `heap_caps_calloc(…, MALLOC_CAP_SPIRAM)` | map 推算 |
+| 屏幕 SPI 中转块 | 22.5KB | 让传输直接从 PSRAM 发。esp_lcd 不给事务带 `SPI_TRANS_DMA_USE_PSRAM`,要在工程内绕（如链接 `--wrap` 补标志）。退路:块高 64 行改 32 或 16 行,中转块随之变小 | **已实测证实存在**;改法未做 |
+| 任务栈搬 PSRAM | 24KB | LVGL 8KB、swdraw 8KB、slow_tick 3KB、motion 3KB、pwr_key 2KB;另建内部栈的 flash 专用任务（约 4KB,未计入） | 栈机制 11-27 已验证（§6.8）;水位已测 |
+| LVGL 热代码整体移出 IRAM | 再 41KB | `CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=n` | 渲染会变慢,未测 |
+| WiFi 的 IRAM 优化开关 | 10~20KB | `ESP_WIFI_IRAM_OPT`、`ESP_WIFI_RX_IRAM_OPT`、`ESP_WIFI_SLP_IRAM_OPT` 置 n | 官方说明的量级;影响吞吐和休眠功耗 |
+| WiFi 不用时注销 | 27KB（临时） | `esp_wifi_stop()` + `esp_wifi_deinit()` | 产品策略,未定 |
+| NVS 懒加载或换裸分区 | 不值得 | 实测初始化只占约 2KB | 实测 |
+
+**二、基线实测（2026-11-28）**
+
+方法:
+- 第一轮:现配置 + 临时探针。各初始化阶段读内部堆,开机早期的读数先存内存、3 秒后转存打印（复位后头几秒串口抓不全）;发一条无副作用的命令（0x29）让 esp_lcd 回收上一笔在途传输,前后余量之差即中转块大小;`lv_mem_monitor()` 读 LVGL 池;探针任务每 6 秒自动翻一页;刷新性能读现成的 `flush perf` 行。
+- 第二轮:另用临时配置副本打开 `CONFIG_FREERTOS_USE_TRACE_FACILITY` 和 `CONFIG_HEAP_TASK_TRACKING`,量各任务栈水位。工程里的 sdkconfig 没动。
+- 探针任务的栈和打印缓冲都放 PSRAM,不占内部 RAM。两轮 WiFi 都没连上（热点不在）。
+
+结果 1:稳态内部堆去向（WiFi 已初始化、未连接;单位 KB）
+
+| 项目 | 占用 | 依据 |
+|---|---|---|
+| 屏幕 SPI 中转块 | 22.0 | 实测 |
+| WiFi 驱动（初始化 + 启动） | 23.5 | 实测（本次 24,056 字节） |
+| LVGL 主任务栈 + swdraw 栈 | 16.4 | 配置值（两个 8192） |
+| lwIP 任务、时钟和闹钟初始化等（未拆分） | 4.4 | 阶段差值 |
+| 事件总线（任务栈 + 队列） | 3.8 | 阶段差值 |
+| `slow_tick` 栈 | 3.4 | 阶段差值 |
+| `motion` 栈 | 3.4 | 阶段差值 |
+| 显示、触摸、I2C 驱动 | 3.5 | 阶段差值 |
+| 按键任务 + ADC | 2.5 | 阶段差值 |
+| NVS 初始化 | 2.1 | 阶段差值 |
+| 空闲 | 14.9 | 实测 |
+| 合计 | 99.9 | `app_main` 开始时堆 96.1 + `main` 任务退出归还 3.9,差约 0.1 未对上 |
+
+结果 2:各阶段内部余量（第一轮,单位字节）
+
+| 阶段 | 余量 | 最大连续块 |
+|---|---|---|
+| `app_main` 开始 | 98,403 | 45,056 |
+| 显示初始化后 | 55,187 | 31,744 |
+| 事件总线后 | 51,283 | 31,744 |
+| NVS 初始化后 | 49,175 | 31,744 |
+| WiFi 初始化前 | 37,675 | — |
+| WiFi 初始化后 | 13,919 | — |
+| 全部服务起完 | 14,679 | 13,312 |
+| 建 `slow_tick` 后 | 10,955 | 10,240 |
+| `main` 任务退出后（稳态） | 15,307 | 10,240 |
+
+稳态下**最大的一整块连续空间只有 10.2KB**,即当前任何一次超过 10KB 的内部申请都会失败。
+
+结果 3:任务栈水位（第二轮,自动翻页 3 次后;单位字节,三轮启动取最小值）
+
+| 任务 | 栈大小 | 最少剩余 | 峰值约用 |
+|---|---|---|---|
+| LVGL | 8192 | 2388 | 5.8KB |
+| swdraw（LVGL 绘制线程） | 8192 | 6504 | 1.7KB |
+| motion | 3072 | 936 | 2.1KB |
+| slow_tick | 3072 | 892 | 2.2KB |
+| pwr_key | 2048 | 1364 | 0.7KB |
+| 事件任务 sys_evt | 2304 | 660 | 1.6KB |
+| wifi | 3584 | 1264 | 2.3KB |
+| esp_timer | 3584 | 2976 | 0.6KB |
+| tiT | 2048 | 1272 | 0.8KB |
+| Tmr Svc | 2048 | 1360 | 0.7KB |
+| ipc0 / ipc1 | 1280 | 528 / 536 | 0.75KB |
+| IDLE0 / IDLE1 | 1536 | 704 / 696 | 0.8KB |
+| main（`app_main` 结束时） | 3584 | 748 | 2.8KB |
+
+事件任务栈只剩 660 字节余量,不能让顺带替它做 NVS 写入。
+
+结果 4:LVGL 内存池、刷新、调试开关
+
+- LVGL 内存池:静态 64KB,可用 61,580 字节;稳态用 24.6~24.7KB,不翻页时峰值 26.8KB,自动翻页后峰值 30.3KB;约 31KB 一直空着。
+- 刷新:每帧 37~38ms（最大 40ms）,每次刷屏都发全部 10 块,与脏区大小无关。空闲时每秒约 3 帧,脏区固定是页点那一小块（`dirty(270,160 369,163)`）,原因没查。
+- 调试开关的代价:第二轮打开两个跟踪开关后,WiFi 初始化前余量从 37,675 掉到 26,255（少 11.4KB）,稳态只剩 6.6KB、最大连续块 4.6KB。这两个开关只能临时开。
+
+局限:
+- WiFi 未连接,连接阶段的临时开销没包含。
+- 只有自动翻页,没有触摸滑动和编辑页,栈水位和池峰值都是下限。
+- 按任务统计堆没拿到:第二轮探针对已删除任务的句柄调 `pcTaskGetName()`,读到非法地址,板子死机重启 3 次（探针缺陷,与固件无关）。只得到两行有效数:WiFi 驱动在内部 RAM 占 12,184 + 16,164 字节,另在 PSRAM 占约 64KB。
+- 原始日志全文和探针代码没有入库（探针量完即删;是否存档到 `tools/experiments/` 待定）。
+
+原始日志（节选）:
+```
+I (1943) bsp_lcd: PROBE bounce: before free=63863 largest=31744 | after tx_param(0x29) rc=0x0 free=86395 largest=36864 | delta=+22532
+I (2048) app_net: heap[before-init]: internal=37675 min=37675 all=8157312
+I (2157) app_net: heap[after-init]: internal=13919 min=13919 all=8078588
+I (2218) app_net: heap[after-start]: internal=13619 min=11863 all=8076700
+I (5487) probe: stage[slow_tick] internal=10955 min=10551 largest=10240 psram=8055256
+I (5491) probe: main task stack hwm=748
+I (8493) probe: tick t=3s internal=15307 min=10551 largest=10240 psram=8047052
+I (8572) probe: replay bounce: before free=63863 largest=31744 | after tx_param(0x29) rc=0x0 free=86395 largest=36864 | delta=+22532
+I (8630) probe: lv pool: total=61580 used=24636 max_used=26808 free_biggest=35860 frag=3%
+I (17644) probe: lv pool: total=61580 used=24656 max_used=30092 free_biggest=35860 frag=3%
+I (17834) bsp_lcd: flush perf: 22 fr, avg 38 ms, max 39 ms, dirty(270,160 369,163), touch taps 0/385
+I (23989) bsp_lcd: flush perf: 15 fr, avg 38 ms, max 39 ms, dirty(270,160 369,163), touch taps 0/480
+```
+第二轮:
+```
+I (2052) app_net: heap[before-init]: internal=26255 min=26255 all=8131360
+I (8483) probe: tick t=3s internal=6623 min=1251 largest=4604 psram=8038296
+I (23660) probe: t=18s tasks=15 (name: stack free bytes / prio)
+I (23665) probe:   motion           free= 1064 prio= 2
+I (23669) probe:   probe            free= 6104 prio= 1
+I (23674) probe:   IDLE1            free=  696 prio= 0
+I (23679) probe:   IDLE0            free=  720 prio= 0
+I (23684) probe:   pwr_key          free= 1364 prio= 2
+I (23689) probe:   tiT              free= 1272 prio=18
+I (23694) probe:   slow_tick        free=  892 prio= 2
+I (23698) probe:   LVGL             free= 2388 prio= 2
+I (23703) probe:   Tmr Svc          free= 1360 prio= 1
+I (23708) probe:   ipc1             free=  536 prio=24
+I (23713) probe:   swdraw           free= 6504 prio= 3
+I (23718) probe:   sys_evt          free=  724 prio=20
+I (23723) probe:   wifi             free= 1296 prio=23
+I (23728) probe:   esp_timer        free= 2976 prio=22
+I (23733) probe:   ipc0             free=  528 prio=24
+I (23738) probe: t=18s heap-by-task[net_init] internal=12184 blocks=58 psram=1148
+I (23745) probe: t=18s heap-by-task[wifi] internal=16164 blocks=30 psram=63946
+```
+
+**三、下一步（待确认;逐项做,每项改完上板对比余量、刷新和显示）**
+- [ ] 关掉用不到的 7 个 LVGL 颜色格式开关,预期内部多约 62KB
+- [ ] LVGL 内存池搬 PSRAM;沙漏页画布搬 PSRAM
+- [ ] 屏幕传输改直接从 PSRAM 发,去掉 22.5KB 中转块
+- [ ] 任务栈搬 PSRAM,另建内部栈的 flash 专用任务
+- [ ] （可选）LVGL 热代码移出 IRAM、WiFi 的 IRAM 优化开关、WiFi 不用时注销
+
+**顺带发现、尚未处理的不符之处**（只报告,没改）
+- `bsp_lcd.c` 三处注释与现状不符:第 65 行"DMA 内部 RAM 中转缓冲"（实际缓冲在 PSRAM）;第 153 行"32 行"（实际 `LCD_TILE_BLOCK_H` 为 64）;第 440~442 行"S3 GDMA 支持 PSRAM 源,4 字节对齐即可"（硬件支持,但 esp_lcd 没带直传标志,实际在内部 RAM 中转）。
+- PROJECT_MEMORY 的"内部 RAM 总账"一行（"116KB 可用 ≈ …"）与本次实测对不上。
+- §6.8 实测记录里"屏幕刷新的 DMA 缓冲在 PSRAM"只说对一半:缓冲在 PSRAM,驱动发送时在内部 RAM 中转。
+
+**来源**
+- map 分析;`components/esp_system/ld/esp32s3/sections.ld.in`、`memory.ld.in`（指令区与堆共用物理 SRAM）
+- `components/esp_driver_spi/src/gpspi/spi_master.c`（`setup_dma_priv_buffer`:发送缓冲在 PSRAM 而事务没带 `SPI_TRANS_DMA_USE_PSRAM` 时,用 `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` 开临时块并拷贝;临时块到 `spi_device_get_trans_result` 才释放）
+- `components/esp_lcd/spi/esp_lcd_panel_io_spi.c`（`panel_io_spi_tx_color` 直接把 color 指针当 `tx_buffer` 入队,从不设该标志;在途事务在下一次 `tx_param` 开头才回收,所以最后一块的中转块常驻）
+- `components/esp_driver_spi/src/gpspi/spi_common.c`（SPI 的 GDMA 通道已配 `access_ext_mem = true`;S3 是 AHB GDMA 版本 1,自动对齐——带上标志即可直传）
+- LVGL: `managed_components/lvgl__lvgl/Kconfig`、`env_support/cmake/esp.cmake`（`LV_ATTRIBUTE_FAST_MEM=IRAM_ATTR`）、`src/stdlib/builtin/lv_mem_core_builtin.c`（`work_mem_int` 静态池、`lv_mem_add_pool()`）、`src/draw/sw/blend/`（各 `lv_draw_sw_blend_to_*.c` 整文件受 `LV_DRAW_SW_SUPPORT_*` 控制）、`src/core/lv_refr.c`（需要透明度的中间层用 ARGB8888）
+
 ---
 
 ## 7. 开发规范
@@ -503,6 +667,8 @@ I (24566) psram_stack: [2] phase 1/1: flash writer on core 0, written mid-frame 
 
 | 日期 | 变更内容 |
 |------|----------|
+| 2026-11-28 | **收工自查补账（逐文档核对 11-27/11-28 两天预研与实测后的表述）**：进度 §2 串口复位表述更正、§4 显示管线缓冲位置与耗时更新、§5 第 6/11 行与 S1.7 行补状态、§6.2 补"为语音腾内部 RAM"待办与页点重绘待查项、§6.3/§6.8 加现状注;PROJECT_MEMORY 内部 RAM 总账换成实测值、512KB 账本的 .data+.bss 构成与结论按 map 校准、WiFi 任务栈 6.6K→3.5K、#2/#26 加注;架构文档资源约束、任务表注、音频输入内存约束各补一条;UI 跟踪 flush 预算补实况、变更记录加实测条目。版本引用核对一致（需求 V0.9/架构 V0.9/交互规范 V1.6）;需求文档无内存条款,未改 |
+| 2026-11-28 | **内部 SRAM 摸底：静态排查 + 基线实测（为语音腾内部 RAM 的第 1 步）**：map 排查发现 LVGL 占 IRAM 103KB、LVGL 内存池 64KB 与沙漏画布 32KB 在静态区;临时探针上板实测——屏幕 SPI 传输在内部 RAM 常驻 22.5KB 中转块（发一条命令令其回收,余量 63,863→86,395）,稳态内部空闲 15.3KB、最大连续块 10.2KB;新发现 LVGL 绘制线程 swdraw 另占 8KB 栈;量了全部任务栈水位、LVGL 池用量（稳态 24.7KB、峰值 30.3KB）、刷新基线（每帧约 38ms）。探针已撤、固件已还原、sdkconfig 未动;只摸底,未改任何正式代码或配置。结论、可省项和下一步见 §6.9,PROJECT_MEMORY #41~#43 |
 | 2026-11-27 | **资料查证入档：音频/语音哪些内存必须在内部 RAM**（只查源码与官方文档,未上板）——I2S 驱动自己的 DMA 缓冲只能内部 RAM（默认约 3~6KB 一路）,交给 I2S 读写的数据缓冲可放 PSRAM;ESP-SR 除 PSRAM 外另需内部 RAM 约 65~78KB（AFE 链 49~60KB + MultiNet 16~18KB）,当前内部 RAM 只剩约 11~16KB。§6.1③ 资源占用一行按现行官方文档更正;PROJECT_MEMORY #40。另:写 flash 撞屏幕刷新已获用户目视复核（无花屏、无黑屏、无重启） |
 | 2026-11-27 | **生死线实验第 ② 项通过 + 写 flash 撞屏幕刷新实测（搬迁前第 1 步收官）**：用存档代码的内部栈任务写分区表外空白扇区（全天七十多次擦写,读回核对一致）——核 0 写、核 1 写、不管屏幕、掐在界面正忙时写四种写法下,PSRAM 栈任务最长被停 28ms,数据与栈守卫完好,界面不卡不崩。屏幕 DMA 缓冲在 PSRAM,与写 flash 相撞时传输不出错,被撞的帧慢约 26ms 后恢复（用户目视复核:无花屏、无黑屏、无重启）。数字与原始日志入 §6.8 实测记录;PROJECT_MEMORY #38 补充、新增 #39、§1a 补实测说明;测试代码已撤出固件并烧回干净固件,存档 `tools/experiments/psram_stack_test.c` 更新为实跑版本（含两种跑法开关） |
 | 2026-11-27 | **JS 方案生死线实验 ①③ 通过（PSRAM 任务栈可用）**：临时测试任务钉在 core 1、不耦合业务——PSRAM 栈任务（16KB）与内部栈对照任务跑同一份负载,结果逐位相同;负载耗时慢约 1%（7340/7315 vs 7269/7276 ms）,栈峰值 ~3.1KB,任务切换往返 30µs 与内部栈无差别,不崩、界面照常。看门狗告警 2 次系测试负载占满 core 1 饿死 IDLE1,与 PSRAM 栈无关。数字、原始日志与附带发现入 §6.8"实测记录",PROJECT_MEMORY 加 #38;②flash 并发、④XIP from PSRAM、PSRAM 水位探针未做。测试代码已从固件移除（重新编译烧录,开机日志干净）,源码存档 `tools/experiments/psram_stack_test.c` |

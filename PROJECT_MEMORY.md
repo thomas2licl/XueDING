@@ -13,7 +13,7 @@
 | # | 日期 | 坑 | 一句话教训 | 详情 |
 |---|---|---|---|---|
 | 1 | 11-10 | AXS15231B QSPI 只支持从 y=0 顺序流写（RASET 无效,0x3C 续写） | 任意窗口直写必花屏——驱动契约先实测再设计 flush | 进度 §6.3 |
-| 2 | 11-10 | 整帧 PSRAM 列式旋转 148ms/帧 | tile 16×16 转置+DMA 乒乓 → ~20ms/帧 | 进度 §6.3 |
+| 2 | 11-10 | 整帧 PSRAM 列式旋转 148ms/帧 | tile 16×16 转置+DMA 乒乓 → ~20ms/帧（2026-11-28 复测约 38ms/帧,见 #41） | 进度 §6.3 |
 | 3 | 11-20 | LVGL 双缓冲 DIRECT 的 sync_areas 漏拷 → 随机闪旧像素 | flush 同步等 DMA 时双缓冲零收益,直接单缓冲根治 | 进度 §6.3 |
 | 4 | 11-20 | 270 方向短前缀与 90 行为不对称 | 前缀刷统一全量 10 块,~10ms 代价换一致性 | 进度 §6.3 |
 | 5 | 11-13 | bootloader 期 ~1s 花屏（背光 CTRL 硬件上拉） | app 软件无法触及,三方案挂起中 | 进度 §6.5 |
@@ -78,7 +78,7 @@
 |---|---|---|---|---|
 | 24 | 11-21 | esp_event_loop_create_default 重复调用→abort | app_event 已建 default loop,组件内不可再调（重复创建即 abort） | 代码注释 |
 | 25 | 11-21 | esp_wifi_init 返回 0x101(NO_MEM) | esf 静态 TX 池是**大头（16 个×1.6KB=25.6KB）**,砍 STATIC_TX_BUFFER_NUM 16→6 是最有效一刀 | 本节下文 |
-| 26 | 11-21 | LVGL+WiFi 同跑内部 RAM 不够 | 三个方向齐下：DMA 中转缓冲→PSRAM / 删空任务+四任务合并 slow_tick / WiFi 全链裁剪（TX/RX/mgmt/lwIP/保留池） | 本节下文 |
+| 26 | 11-21 | LVGL+WiFi 同跑内部 RAM 不够 | 三个方向齐下：DMA 中转缓冲→PSRAM / 删空任务+四任务合并 slow_tick / WiFi 全链裁剪（TX/RX/mgmt/lwIP/保留池）（"DMA 中转缓冲→PSRAM"实际只省约 22KB,见 #41） | 本节下文 |
 | 27 | 11-21 | WiFi 后启动→motion/timer 任务建栈失败 abort | **先启 WiFi（大块连续 esf 须堆完整时拿走）,后建任务**;所有 xTaskCreate 加降级兜底（降级≠abort） | main.c |
 | 28 | 11-21 | net_init 任务 2KB 栈溢出→stack overflow 复位 | esp_wifi_init 调用深,任务栈至少 4KB | app_net.c |
 | 29 | 11-21 | motion 栈砍 2KB 后溢出 | 3KB 是底线（IMU 读+浮点+LVGL 锁切旋转）,不动 | app_motion.c |
@@ -87,12 +87,15 @@
 | 38 | 11-27 | 内部 RAM 吃紧,各任务栈（~15K）却全占内部 RAM | 任务栈可以搬去 PSRAM:`heap_caps_malloc(…, MALLOC_CAP_SPIRAM)`+`xTaskCreateStaticPinnedToCore` 实测可用（慢约 1%、切换无差别、不崩）;别的任务写 flash 时它只被暂停 ≤28ms,无恙（同日续测）;条件=本任务永不碰 flash 驱动（§1a）,且须定期让出 CPU（满负荷占核超 5s 会触发任务看门狗告警） | 进度 §6.8 实测记录 |
 | 39 | 11-27 | 写 flash 时屏幕正在从 PSRAM 往面板搬数据（DMA 缓冲在 PSRAM,与 flash 共用总线） | 实测相撞无害:传输不出错,被撞的帧慢约 26ms 后恢复,界面不卡不崩;无需"写 flash 前先让屏幕暂停"（用户目视复核:无花屏、无黑屏、无重启） | 进度 §6.8 实测记录 |
 | 40 | 11-27 | 音频/语音哪些内存必须在内部 RAM（只查源码与官方文档,未上板） | ①I2S 驱动自己的 DMA 缓冲**只能内部 RAM**:驱动写死 INTERNAL+DMA（`i2s_private.h` 的 `I2S_DMA_ALLOC_CAPS`,无开关）,默认 6 段×240 帧,按位宽/声道约 3~6KB 一路,录音、播放各一套;交给 `i2s_channel_read/write` 的数据缓冲可放 PSRAM（驱动用 memcpy 搬运,`i2s_common.c:1382/1432`）。②ESP-SR 语音识别大头在 PSRAM,但另固定占内部 RAM 约 65~78KB（AFE 链 49~60KB + MultiNet 16~18KB;PSRAM 约 3.0~3.7MB）;TTS 运行时 RAM 20KB、flash 2.2MB。当前内部 RAM 只剩约 11~16KB:搬任务栈腾 13~16KB 不够,语音上板前还要再腾几十 KB | 官方 benchmark 文档（master）;IDF v5.5.4 esp_driver_i2s;进度 §6.1③ |
+| 41 | 11-28 | 屏幕传输在内部 RAM 常驻一块 22.5KB 的隐藏中转（11-21"DMA 中转缓冲→PSRAM"的收益被高估） | esp_lcd 的 SPI 面板驱动发数据时不带 `SPI_TRANS_DMA_USE_PSRAM`,SPI 驱动就先把 PSRAM 缓冲拷进内部 RAM 临时块再发;最后一块的临时块要到下一块发命令时才回收,所以常驻。实测令其回收:内部余量多出 22,532 字节。想真正省下须让传输直接从 PSRAM 发（硬件支持,缺的只是标志）;退路是把块改小 | 进度 §6.9 |
+| 42 | 11-28 | LVGL 有两个任务栈在内部 RAM:主任务 8KB + 绘制线程 swdraw 8KB | swdraw 是 LVGL 自带的软件绘制线程（`CONFIG_LV_DRAW_THREAD_STACK_SIZE=8192`）,此前任务清单漏记;实测峰值主任务 5.8KB、swdraw 1.7KB。搬栈时要把它算进去 | 进度 §6.9 |
+| 43 | 11-28 | 调试开关自己吃内存:`CONFIG_FREERTOS_USE_TRACE_FACILITY` + `CONFIG_HEAP_TASK_TRACKING` 占约 11KB 内部 RAM | 只能量的时候临时开（用 sdkconfig 副本,不动工程配置）,量完关掉;另 `heap_caps_get_per_task_info` 的结果不要拿 `pcTaskGetName()` 取名,已删除任务的句柄是悬空的,会死机 | 进度 §6.9 |
 
 **WiFi 内存全景（真机实测）**：
-- WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 6.6K + lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
+- WiFi 驱动常驻内部 RAM = **~27.4KB**（TX 池 9.6K + 驱动任务栈 3.5K〔2026-11-28 日志 stack:3584,原记 6.6K 不准〕+ lwIP + phy）——归驱动所有,不随 net_init 任务栈释放,直到 `esp_wifi_deinit()`
 - net_init 任务栈 4KB 是临时的,vTaskDelete 自删即回收
 - **水位探针实测（2026-11-25/26,app_net `heap[...]` 四点;口径=内部堆当前值与开机以来最低水位）**:esp_wifi_init 占用=init 前后差 **27092×4、23660×2 字节**（六次启动,两次偏低 3432 字节,原因未查）,init 期间无更深瞬时下探;start 期间再瞬时下探 1756~1796 字节;**全链路峰值（init 前内部堆 − 最低水位）=25716~29320 字节（25.1~28.6 KiB）,随 init 占用的启动间差异浮动**——曾记的 51K/40K 不成立;未连 WiFi 时最低水位出现在 start 段,连上的四次中两次连接过程比 start 段再低 1936 字节（got-ip 最低 11231）,两次未创新低;got-ip 后回升到 15703~16495）
-- **内部 RAM 总账（大头项,非精确账）**：116KB 可用 ≈ LVGL 任务栈~6K + DMA 保留池 16K + 各任务栈~15K + WiFi 驱动 27.4K + 剩余 ~11.4K（以上相加 75.8K,未含系统任务栈/NVS/netif/碎片约 40K;精确值以真机日志为准,2026-11-23 校准）
+- **内部 RAM 总账（2026-11-28 按阶段实测,明细与原始日志见进度 §6.9）**：`app_main` 开始时堆 98,403 字节（链接口径 116KB,系统任务启动已占约 22K）。稳态去向（WiFi 已初始化、未连接）:屏幕 SPI 中转块 22.0K + WiFi 驱动 23.5K + LVGL 两个任务栈 16.4K + lwIP/时钟闹钟初始化等 4.4K + 事件总线 3.8K + slow_tick 与 motion 各 3.4K + 显示触摸 I2C 驱动 3.5K + 按键任务和 ADC 2.5K + NVS 2.1K,空闲 14.9K,**最大连续块只有 10.2K**。（原 2026-11-23 估算"116KB ≈ LVGL 任务栈~6K + DMA 保留池 16K + … + 剩余 ~11.4K"作废）
 - iPhone 热点须开"最大兼容性"（=2.4GHz,ESP32 不支持 5GHz）
 - 对完时可 `esp_wifi_stop()+deinit()` 回收 27.4KB,需要时重新 init（~2s 重连）——符合需求 §9 联网降频
 
@@ -104,11 +107,11 @@
 | DCache（数据缓存） | 32KB | 硬件固定（PSRAM 必经） | ✗ |
 | IRAM 中断向量 | 1KB | 硬件 | ✗ |
 | IRAM 代码段 | ~204KB | WiFi 驱动/FreeRTOS 内核/中断处理——必须放 SRAM 才能高速执行 | 极有限 |
-| .data+.bss（全局变量） | ~136KB | LVGL ~25K + WiFi/wpa ~20K + mbedcrypto ~15K + lwIP ~12K + FreeRTOS ~8K + libc ~10K + 本项目 ~8K + hal/NVS 等 ~38K | 有限（裁功能才省） |
-| 动态堆（malloc/任务栈） | **116KB** | 唯一可自由分配——任务栈+WiFi esf+DMA 保留池全在此 | ✓ 主战场 |
+| .data+.bss（全局变量） | ~136KB | **bss 113K**:LVGL ~66K（其中 64K 内存池）+ 本项目 ~33K（沙漏页画布 32K）+ WiFi 驱动各库 ~9K + lwIP ~3.4K + 其余系统库 ~4K;**data 22.5K**:hal/phy/FreeRTOS/flash 驱动的参数表等（2026-11-28 按 map 校准;原记"LVGL ~25K、本项目 ~8K、mbedcrypto ~15K、lwIP ~12K"不准） | 有限——LVGL 内存池与沙漏画布可搬 PSRAM（约 96K）,其余要裁功能才省 |
+| 动态堆（malloc/任务栈） | **116KB** | 唯一可自由分配——任务栈+WiFi esf+DMA 保留池全在此（`app_main` 开始时实测空闲 98,403 字节,2026-11-28） | ✓ 主战场 |
 | RTC RAM | 7KB | 深度睡眠 | ✗ |
 
-> **结论：512KB 中 ~390KB 在写第一行代码前就被占死**——真正可自由分配的只有 116KB 动态堆,这也是 WiFi 27KB 打得艰难的根本原因。后续大块数据一律 PSRAM（余 7.7MB）。
+> **结论：512KB 中 ~390KB 在写第一行代码前就被占死**——真正可自由分配的只有 116KB 动态堆,这也是 WiFi 27KB 打得艰难的根本原因。后续大块数据一律 PSRAM（余 7.7MB）。**2026-11-28 补:并非全无余地——指令区里的 LVGL 103KB、内存池 64KB、沙漏画布 32KB 可以往外挪,另有屏幕 SPI 中转块 22.5KB 可去掉,合计约 200KB 待腾（进度 §6.9）。**
 
 **SNTP 对时链路（2026-11-21 全通）**：
 - 触发链：每 1h（`CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000`）lwIP SNTP 向 ntp.aliyun.com 发 UDP → NTP 应答 → lwIP 设系统时钟 → `sntp_sync_cb` 回调 → 发 `LL_EV_TIME_SYNCED` 事件（载荷 bsp_rtc_datetime_t）→ app_clock 订阅 → `app_clock_sync_time()` 写 PCF85063 + 更新缓存
